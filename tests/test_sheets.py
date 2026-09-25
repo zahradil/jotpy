@@ -184,6 +184,48 @@ def test_batch_set_and_unknown_name(client, data_dir):
     assert both.json()["columns"][-2:] == ["Cena", "cena"]
 
 
+def test_move_and_resize(client, data_dir):
+    setup_owner(client)
+    sheet_id = client.post("/api/sheets").json()["sheet"]["id"]
+    _ops(client, sheet_id, 0, [
+        {"op": "insert_column", "name": "a"},
+        {"op": "insert_column", "name": "b"},
+        {"op": "insert_column", "name": "c"},
+        {"op": "insert_row", "values": {"a": "1"}},
+        {"op": "insert_row", "values": {"a": "2"}},
+        {"op": "insert_row", "values": {"a": "3"}},
+    ])
+    meta = _meta(data_dir, sheet_id)
+    col = {column["name"]: column["id"] for column in meta["columns"]}
+    row = [item["id"] for item in meta["rows"]]
+
+    moved = _ops(client, sheet_id, 1, [
+        {"op": "move_column", "name": "c", "before": col["a"]},
+        {"op": "move_column", "name": "a"},
+        {"op": "move_row", "row": row[2], "before": row[0]},
+        {"op": "move_row", "row": {"column": "a", "value": "1"}},
+        {"op": "move_row", "row": row[1], "before": row[1]},
+    ])
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["columns"] == ["c", "b", "a"]
+    assert [item["a"] for item in moved.json()["rows"]] == ["3", "2", "1"]
+
+    # Order and width ops do not conflict with an older baseVersion.
+    resized = _ops(client, sheet_id, 1, [{"op": "resize_column", "name": "b", "width": 220}])
+    assert resized.status_code == 200, resized.text
+    assert _meta(data_dir, sheet_id)["columns"][1] == {"id": col["b"], "name": "b", "width": 220}
+    assert "width" not in _meta(data_dir, sheet_id)["columns"][0]
+
+    assert _ops(client, sheet_id, 3, [{"op": "resize_column", "name": "b", "width": 5}]).status_code == 400
+    assert _ops(client, sheet_id, 3, [{"op": "resize_column", "name": "b", "width": True}]).status_code == 400
+    assert _ops(client, sheet_id, 3, [{"op": "move_row", "row": row[0], "before": "-----"}]).status_code == 400
+    assert _ops(client, sheet_id, 3, [{"op": "move_column", "name": "zz"}]).status_code == 400
+
+    cleared = _ops(client, sheet_id, 3, [{"op": "resize_column", "name": "b", "width": None}])
+    assert cleared.status_code == 200
+    assert "width" not in _meta(data_dir, sheet_id)["columns"][1]
+
+
 def test_cell_version_conflict(client, data_dir):
     setup_owner(client)
     sheet_id = client.post("/api/sheets").json()["sheet"]["id"]

@@ -35,6 +35,8 @@ __all__ = [
 
 _SHEET_LEVELS = {"view": 1, "edit": 2}
 _COLUMN_OPS = frozenset({"insert_column", "rename_column", "delete_column"})
+MIN_COLUMN_WIDTH = 40
+MAX_COLUMN_WIDTH = 2000
 
 
 class SheetOpError(Exception):
@@ -56,6 +58,7 @@ class Cell:
 class SheetColumn:
     id: str
     name: str
+    width: int | None = None
 
 
 @dataclass
@@ -125,7 +128,7 @@ def clone_sheet(sheet: SheetRecord) -> SheetRecord:
         share_expires_day=sheet.share_expires_day,
         created_at=sheet.created_at,
         updated_at=sheet.updated_at,
-        columns=[SheetColumn(column.id, column.name) for column in sheet.columns],
+        columns=[SheetColumn(column.id, column.name, column.width) for column in sheet.columns],
         rows=[
             SheetRow(row.id, {col_id: Cell(cell.value, cell.version) for col_id, cell in row.cells.items()})
             for row in sheet.rows
@@ -152,9 +155,24 @@ def _sheet_to_json(sheet: SheetRecord) -> dict:
         "shareExpiresDay": sheet.share_expires_day,
         "createdAt": sheet.created_at,
         "updatedAt": sheet.updated_at,
-        "columns": [{"id": column.id, "name": column.name} for column in sheet.columns],
+        "columns": [_column_json(column) for column in sheet.columns],
         "rows": rows,
     }
+
+
+def _column_json(column: SheetColumn) -> dict:
+    item = {"id": column.id, "name": column.name}
+    if column.width is not None:
+        item["width"] = column.width
+    return item
+
+
+def _valid_width(value) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int)
+        and MIN_COLUMN_WIDTH <= value <= MAX_COLUMN_WIDTH
+    )
 
 
 def render_csv(column_names: list[str], records: list[tuple[str, dict[str, str]]]) -> str:
@@ -221,7 +239,8 @@ def _load_sheet(runtime, path) -> SheetRecord | None:
                 continue
             seen_ids.add(column_id)
             seen_names.add(name)
-            columns.append(SheetColumn(column_id, name))
+            width = item.get("width")
+            columns.append(SheetColumn(column_id, name, width if _valid_width(width) else None))
     column_ids = {column.id for column in columns}
     rows: list[SheetRow] = []
     raw_rows = meta.get("rows")
@@ -415,6 +434,13 @@ def _place(items: list, before, new_item) -> None:
     items.insert(index, new_item)
 
 
+def _move(items: list, item, before) -> None:
+    if before == item.id:
+        return
+    items.remove(item)
+    _place(items, before, item)
+
+
 def apply_ops(sheet: SheetRecord, base_version, ops) -> tuple[SheetRecord, list[str]]:
     if isinstance(base_version, bool) or not isinstance(base_version, int):
         raise SheetOpError(400, "baseVersion must be an integer.")
@@ -444,6 +470,13 @@ def apply_ops(sheet: SheetRecord, base_version, ops) -> tuple[SheetRecord, list[
                 _delete_row(working, op, base_version, original_version, changed, inserted)
             elif kind == "set":
                 _set_cell(working, op, base_version, original_version, changed)
+            elif kind == "move_column":
+                column = _column_by_name(working, op.get("name"))
+                _move(working.columns, column, op.get("before"))
+            elif kind == "move_row":
+                _move(working.rows, _resolve_row(working, op.get("row")), op.get("before"))
+            elif kind == "resize_column":
+                _resize_column(working, op)
             else:
                 raise SheetOpError(400, "Invalid operation.")
         except SheetOpError as exc:
@@ -482,6 +515,17 @@ def _rename_column(sheet: SheetRecord, op: dict) -> None:
     if new_name != column.name and any(item.name == new_name for item in sheet.columns):
         raise SheetOpError(400, "Column already exists.")
     column.name = new_name
+
+
+def _resize_column(sheet: SheetRecord, op: dict) -> None:
+    column = _column_by_name(sheet, op.get("name"))
+    width = op.get("width")
+    if width is None:
+        column.width = None
+        return
+    if not _valid_width(width):
+        raise SheetOpError(400, f"width must be an integer from {MIN_COLUMN_WIDTH} to {MAX_COLUMN_WIDTH}.")
+    column.width = width
 
 
 def _delete_column(sheet: SheetRecord, op: dict, changed: set[tuple[str, str]]) -> None:
@@ -638,7 +682,7 @@ def ops_http_body(sheet: SheetRecord, inserted: list[str]) -> dict:
 def sheet_grid(sheet: SheetRecord) -> dict:
     return {
         "version": sheet.version,
-        "columns": [{"id": column.id, "name": column.name} for column in sheet.columns],
+        "columns": [_column_json(column) for column in sheet.columns],
         "rows": [
             {"id": row.id, "cells": {column.id: cell_value(row, column.id) for column in sheet.columns}}
             for row in sheet.rows
