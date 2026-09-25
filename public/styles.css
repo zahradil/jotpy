@@ -365,6 +365,7 @@ input:focus, textarea:focus { border-color: var(--muted); }
   box-shadow: var(--shadow);
 }
 .share-popover-row { display: flex; align-items: center; gap: 0.5rem; }
+.share-popover-row + .share-popover-row { margin-top: 0.5rem; }
 .share-popover-row select {
   flex: 1; padding: 0.4rem 0.5rem; border-radius: 6px;
   border: 1px solid var(--line); background: var(--input-bg); color: var(--text);

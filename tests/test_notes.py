@@ -1,4 +1,5 @@
 import json
+import re
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,7 @@ def test_note_roundtrip_and_second_start(client, data_dir):
     created = client.post("/api/notes")
     assert created.status_code == 200
     note_id = created.json()["note"]["id"]
+    assert re.fullmatch(r"[0-9a-z]{5}", note_id)
     assert created.json()["note"]["title"] == "untitled"
 
     saved = client.put(f"/api/notes/{note_id}", json={"title": "Poznámka", "markdown": "hello\n"})
@@ -33,13 +35,18 @@ def test_note_roundtrip_and_second_start(client, data_dir):
     assert list(meta) == [
         "id",
         "title",
-        "shareId",
+        "shareGeneration",
         "shareAccess",
+        "shareExpiresDay",
         "createdAt",
         "updatedAt",
         "threads",
         "collab",
     ]
+    assert meta["shareGeneration"] == 0
+    assert meta["shareAccess"] == "none"
+    assert meta["shareExpiresDay"] is None
+    assert "shareId" not in meta
     assert meta["collab"]["chars"][0]["chars"] == "hello\n"
     assert (data_dir / "notes" / f"{note_id}.md").read_text(encoding="utf-8") == "hello\n"
 

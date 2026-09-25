@@ -119,6 +119,8 @@ export function createCollabEditor(textarea, opts) {
 
   let ws = null;
   let destroyed = false;
+  let pageHidden = false;
+  let reconnectTimer = null;
   let programmatic = false;
   let initialized = false;
   let connected = false;
@@ -418,7 +420,33 @@ export function createCollabEditor(textarea, opts) {
 
   // ---- WebSocket ----
 
+  function clearReconnect() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  // Back to notes keeps this document in the browser cache with the socket still
+  // open. The server then draws that cursor into the next visit. Close it here
+  // and do not reconnect until the same document is shown again.
+  function onPageHide() {
+    pageHidden = true;
+    clearReconnect();
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      ws.close();
+    }
+  }
+
+  function onPageShow(event) {
+    if (!event.persisted) return;
+    pageHidden = false;
+    if (destroyed) return;
+    if (!ws || ws.readyState === WebSocket.CLOSED) connect();
+  }
+
   function connect() {
+    if (destroyed || pageHidden) return;
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const param = noteId ? `noteId=${encodeURIComponent(noteId)}` : `shareId=${encodeURIComponent(shareId)}`;
     ws = new WebSocket(`${protocol}//${location.host}/?${param}`);
@@ -433,11 +461,17 @@ export function createCollabEditor(textarea, opts) {
       else if (msg.type === "threads-updated") onThreadsUpdated?.();
     });
     ws.addEventListener("close", () => {
-      if (destroyed) return;
+      if (destroyed || pageHidden) return;
       setConnected(false);
       remoteCursors.clear();
       renderRemoteCursors();
-      setTimeout(() => { if (!destroyed) { reconnectDelay = Math.min(reconnectDelay * 1.5, RECONNECT_MAX_MS); connect(); } }, reconnectDelay);
+      clearReconnect();
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (destroyed || pageHidden) return;
+        reconnectDelay = Math.min(reconnectDelay * 1.5, RECONNECT_MAX_MS);
+        connect();
+      }, reconnectDelay);
     });
     ws.addEventListener("error", () => { setConnected(false); });
   }
@@ -452,15 +486,20 @@ export function createCollabEditor(textarea, opts) {
   textarea.addEventListener("blur", throttledPresence);
   textarea.addEventListener("scroll", renderRemoteCursors);
 
+  window.addEventListener("pagehide", onPageHide);
+  window.addEventListener("pageshow", onPageShow);
   connect();
 
   return {
     destroy() {
       destroyed = true;
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+      clearReconnect();
       textarea.removeEventListener("beforeinput", handleBeforeInput);
       textarea.removeEventListener("input", handleInput);
       if (resizeObserver) resizeObserver.disconnect();
-      if (ws) ws.close();
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close();
       overlay.remove();
       mirror.remove();
     },

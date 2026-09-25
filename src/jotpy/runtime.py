@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from jotpy.notes import NoteRecord, load_notes_into_memory
+from jotpy.tickets import load_link_key
 
 
 @dataclass
@@ -16,6 +17,7 @@ class Runtime:
     clients: list = field(default_factory=list)
     client_id_counter: int = 0
     next_color_index: int = 0
+    link_key: bytes = b""
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @classmethod
@@ -25,6 +27,7 @@ class Runtime:
         notes_dir = resolved / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
         runtime = cls(data_dir=resolved, notes_dir=notes_dir, auth_path=resolved / "auth.json")
+        runtime.link_key = load_link_key(resolved)
         load_notes_into_memory(runtime)
         return runtime
 

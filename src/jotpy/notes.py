@@ -19,6 +19,7 @@ from jotpy.collab import (
 )
 from jotpy.js_text import count_occurrences, utf16_index_of, utf16_len, utf16_slice
 from jotpy.markdown_html import render_markdown
+from jotpy.tickets import NOTE_ID_RE, expiry_day, open_ticket, ticket_for, today_utc
 from jotpy.util import create_short_id, now_iso, read_json, write_json
 
 SHARE_LEVELS = {"none": 0, "view": 1, "comment": 2, "edit": 3}
@@ -28,8 +29,9 @@ SHARE_LEVELS = {"none": 0, "view": 1, "comment": 2, "edit": 3}
 class NoteRecord:
     id: str
     title: str
-    share_id: str
+    share_generation: int
     share_access: str
+    share_expires_day: int | None
     created_at: str
     updated_at: str
     threads: list
@@ -91,16 +93,40 @@ def _normalize_threads(raw) -> list:
     return threads
 
 
+def _share_from_meta(meta: dict) -> tuple[int, str, int | None]:
+    access = meta.get("shareAccess") or "none"
+    if access not in ("none", "view", "comment", "edit"):
+        access = "none"
+    generation = meta.get("shareGeneration", 0)
+    if isinstance(generation, bool) or not isinstance(generation, int) or not 0 <= generation <= 255:
+        generation = 0
+    day = meta.get("shareExpiresDay")
+    if access == "none" or isinstance(day, bool) or not isinstance(day, int) or not 0 <= day <= 4095:
+        day = None
+    return generation, access, day
+
+
+def allocate_note_id(runtime) -> str:
+    while True:
+        candidate = create_short_id(5)
+        if NOTE_ID_RE.fullmatch(candidate) is None:
+            continue
+        if candidate in runtime.notes:
+            continue
+        if (runtime.notes_dir / f"{candidate}.md").exists() or (runtime.notes_dir / f"{candidate}.json").exists():
+            continue
+        return candidate
+
+
 def load_notes_into_memory(runtime) -> None:
     runtime.notes.clear()
     if not runtime.notes_dir.exists():
         return
-    for path in runtime.notes_dir.iterdir():
-        if not path.name.endswith(".md"):
-            continue
+    paths = [path for path in runtime.notes_dir.iterdir() if path.name.endswith(".md")]
+    for path in paths:
         file_id = path.name[: -len(".md")]
         meta_path = runtime.notes_dir / f"{file_id}.json"
-        if not meta_path.exists():
+        if not meta_path.is_file():
             continue
         markdown = path.read_text(encoding="utf-8")
         meta = read_json(meta_path)
@@ -112,11 +138,13 @@ def load_notes_into_memory(runtime) -> None:
             collab = load_collab_state(meta["collabState"])
         else:
             collab = collab_from_markdown(markdown)
-        runtime.notes[file_id] = NoteRecord(
+        generation, access, expires = _share_from_meta(meta)
+        note = NoteRecord(
             id=str(meta.get("id") or file_id),
             title=str(meta.get("title") or "untitled"),
-            share_id=str(meta.get("shareId") or ""),
-            share_access=meta.get("shareAccess") or "none",
+            share_generation=generation,
+            share_access=access,
+            share_expires_day=expires,
             created_at=str(meta.get("createdAt") or ""),
             updated_at=str(meta.get("updatedAt") or ""),
             threads=_normalize_threads(meta.get("threads")),
@@ -124,6 +152,9 @@ def load_notes_into_memory(runtime) -> None:
             collab=collab,
             client_acks={},
         )
+        if NOTE_ID_RE.fullmatch(file_id) is None or NOTE_ID_RE.fullmatch(note.id) is None:
+            _migrate_note_id(runtime, note, file_id)
+        runtime.notes[note.id] = note
 
 
 def persist_note(runtime, note: NoteRecord) -> None:
@@ -131,8 +162,9 @@ def persist_note(runtime, note: NoteRecord) -> None:
     meta = {
         "id": note.id,
         "title": note.title,
-        "shareId": note.share_id,
+        "shareGeneration": note.share_generation,
         "shareAccess": note.share_access,
+        "shareExpiresDay": note.share_expires_day,
         "createdAt": note.created_at,
         "updatedAt": note.updated_at,
         "threads": note.threads,
@@ -142,13 +174,28 @@ def persist_note(runtime, note: NoteRecord) -> None:
     write_json(runtime.notes_dir / f"{note.id}.json", meta)
 
 
+def _migrate_note_id(runtime, note: NoteRecord, old_file_id: str) -> None:
+    note.id = allocate_note_id(runtime)
+    if note.share_access in ("view", "comment", "edit"):
+        note.share_generation = 0
+        note.share_expires_day = expiry_day()
+    else:
+        note.share_access = "none"
+        note.share_generation = 0
+        note.share_expires_day = None
+    persist_note(runtime, note)
+    if old_file_id != note.id:
+        delete_note_files(runtime, old_file_id)
+
+
 def create_note(runtime) -> NoteRecord:
     timestamp = now_iso()
     note = NoteRecord(
-        id=create_short_id(),
+        id=allocate_note_id(runtime),
         title="untitled",
-        share_id=create_short_id(14),
+        share_generation=0,
         share_access="none",
+        share_expires_day=None,
         created_at=timestamp,
         updated_at=timestamp,
         threads=[],
@@ -167,13 +214,6 @@ def delete_note_files(runtime, note_id: str) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
-
-
-def find_note_by_share_id(runtime, share_id: str) -> NoteRecord | None:
-    for note in runtime.notes.values():
-        if note.share_id == share_id:
-            return note
-    return None
 
 
 def locate_message(note: NoteRecord, message_id: str):
@@ -198,19 +238,31 @@ def build_snippet(markdown: str, needle: str) -> str:
     return source[start:end]
 
 
-def summarize_note(note: NoteRecord, needle: str) -> dict:
+def note_ticket(runtime, note: NoteRecord) -> str | None:
+    if note.share_access not in ("view", "comment", "edit") or note.share_expires_day is None:
+        return None
+    return ticket_for(
+        runtime.link_key,
+        note.id,
+        note.share_access,
+        note.share_generation,
+        note.share_expires_day,
+    )
+
+
+def summarize_note(runtime, note: NoteRecord, needle: str) -> dict:
     return {
         "id": note.id,
         "title": note.title,
         "updatedAt": note.updated_at,
-        "shareId": note.share_id,
+        "shareId": note_ticket(runtime, note),
         "snippet": build_snippet(note.markdown, needle),
     }
 
 
 def search_notes(runtime, query: str) -> list[dict]:
     needle = query.strip().lower()
-    found = [summarize_note(note, needle) for note in runtime.notes.values()]
+    found = [summarize_note(runtime, note, needle) for note in runtime.notes.values()]
     if needle:
         found = [
             item
@@ -221,8 +273,43 @@ def search_notes(runtime, query: str) -> list[dict]:
     return found
 
 
-def share_url(request, share_id: str) -> str:
-    return f"{request_protocol(request)}://{request_host(request)}/s/{share_id}"
+def share_url(request, ticket: str) -> str:
+    return f"{request_protocol(request)}://{request_host(request)}/s/{ticket}"
+
+
+def share_link(runtime, request, note: NoteRecord) -> tuple[str | None, str]:
+    ticket = note_ticket(runtime, note)
+    if not ticket:
+        return None, ""
+    return ticket, share_url(request, ticket)
+
+
+def update_share(note: NoteRecord, next_access: str, rotate: bool) -> bool:
+    if next_access not in ("none", "view", "comment", "edit"):
+        return False
+    if next_access == "none":
+        changed = note.share_access != "none" or note.share_expires_day is not None
+        note.share_access = "none"
+        note.share_expires_day = None
+        return changed
+    if next_access == note.share_access and not rotate:
+        return False
+    note.share_generation = (note.share_generation + 1) % 256
+    note.share_access = next_access
+    note.share_expires_day = expiry_day()
+    return True
+
+
+def resolve_share(runtime, ticket: str) -> tuple[NoteRecord, str] | None:
+    opened = open_ticket(runtime.link_key, ticket, today_utc())
+    if opened is None:
+        return None
+    note = runtime.notes.get(opened.note_id)
+    if note is None or note.share_access == "none":
+        return None
+    if note.share_generation != opened.generation or note.share_access != opened.access:
+        return None
+    return note, opened.access
 
 
 def build_viewer_info(runtime, request, name_override=None, has_identity_override=None) -> dict:
@@ -279,15 +366,16 @@ def serialize_threads(runtime, note: NoteRecord, request) -> list[dict]:
 
 
 def serialize_note_for_client(runtime, note: NoteRecord, request) -> dict:
+    ticket, url = share_link(runtime, request, note)
     return {
         "note": {
             "id": note.id,
             "title": note.title,
             "markdown": note.markdown,
             "renderedHtml": render_markdown(note.markdown),
-            "shareId": note.share_id,
+            "shareId": ticket,
             "shareAccess": note.share_access,
-            "shareUrl": share_url(request, note.share_id),
+            "shareUrl": url,
             "updatedAt": note.updated_at,
             "createdAt": note.created_at,
         },
@@ -383,12 +471,13 @@ def can_manage_thread(runtime, request, thread: dict) -> bool:
     return any(message.get("authorId") == commenter["id"] for message in thread.get("messages") or [])
 
 
-def require_share_note(runtime, request, share_id: str, minimum: str) -> NoteRecord | None:
-    note = find_note_by_share_id(runtime, share_id)
-    if note is None:
+def require_share_note(runtime, request, ticket: str, minimum: str) -> NoteRecord | None:
+    resolved = resolve_share(runtime, ticket)
+    if resolved is None:
         return None
+    note, access = resolved
     if is_owner_authenticated(runtime, request.headers):
         return note
-    if SHARE_LEVELS.get(note.share_access, 0) < SHARE_LEVELS[minimum]:
+    if SHARE_LEVELS.get(access, 0) < SHARE_LEVELS[minimum]:
         return None
     return note

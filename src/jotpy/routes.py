@@ -4,6 +4,7 @@ import json
 import math
 import traceback
 import urllib.parse
+from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -37,7 +38,6 @@ from jotpy.notes import (
     can_manage_thread,
     create_note,
     delete_note_files,
-    find_note_by_share_id,
     locate_message,
     normalize_comment_body,
     normalize_commenter_name,
@@ -45,12 +45,14 @@ from jotpy.notes import (
     persist_note,
     plan_text_edits,
     require_share_note,
+    resolve_share,
     sanitize_anchor,
     search_notes,
     serialize_note_for_client,
     serialize_threads,
-    share_url,
+    share_link,
     summarize_note,
+    update_share,
     build_viewer_info,
 )
 from jotpy.pages import render_app_shell, render_auth_page, render_simple_page
@@ -110,13 +112,15 @@ def _note_or_error(runtime, note_id: str):
     return note, None
 
 
-def _share_or_error(runtime, request: Request, share_id: str, minimum: str):
-    if find_note_by_share_id(runtime, share_id) is None:
-        return None, _error(404, "Shared note not found.")
-    note = require_share_note(runtime, request, share_id, minimum)
+def _share_or_error(runtime, request: Request, ticket: str, minimum: str):
+    note = require_share_note(runtime, request, ticket, minimum)
     if note is None:
         return None, _error(404, "Shared note not found.")
     return note, None
+
+
+def _skill_markdown_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "skill-jot" / "SKILL.md"
 
 
 async def _save_threads(runtime, note) -> None:
@@ -167,6 +171,13 @@ def register_routes(app: FastAPI) -> None:
     async def health():
         return PlainTextResponse("ok")
 
+    @app.get("/skill/jot/SKILL.md")
+    async def skill_markdown():
+        path = _skill_markdown_path()
+        if not path.is_file():
+            return _page_missing("Not found", "<p>Page not found.</p>")
+        return PlainTextResponse(path.read_text(encoding="utf-8"), media_type="text/markdown")
+
     @app.get("/login")
     async def login_page(request: Request):
         runtime = request.app.state.runtime
@@ -199,14 +210,15 @@ def register_routes(app: FastAPI) -> None:
     async def share_page(request: Request, share_id: str):
         runtime = request.app.state.runtime
         async with runtime.lock:
-            note = find_note_by_share_id(runtime, share_id)
-            if note is None or note.share_access == "none":
+            resolved = resolve_share(runtime, share_id)
+            if resolved is None:
                 return _page_missing("Not found", "<p>Shared note not found.</p>")
+            note, access = resolved
             return HTMLResponse(
                 render_app_shell(
                     "public",
                     note.title,
-                    {"shareId": note.share_id, "shareAccess": note.share_access},
+                    {"shareId": share_id, "shareAccess": access},
                 )
             )
 
@@ -330,7 +342,7 @@ def register_routes(app: FastAPI) -> None:
                 return denied
             note = create_note(runtime)
             await broadcast_note_update(runtime, note)
-            return _ok({"note": summarize_note(note, "")})
+            return _ok({"note": summarize_note(runtime, note, "")})
 
     @app.get("/api/notes/{note_id}")
     async def notes_get(request: Request, note_id: str):
@@ -396,20 +408,27 @@ def register_routes(app: FastAPI) -> None:
                 next_access = note.share_access
             title_changed = next_title != note.title
             markdown_changed = next_markdown != note.markdown
-            access_changed = next_access != note.share_access
             note.title = next_title
-            note.share_access = next_access
+            share_changed = update_share(note, next_access, body.get("rotateShare") is True)
             if markdown_changed:
                 note.collab = collab_from_markdown(next_markdown, note.collab.server_counter + 1)
                 note.markdown = next_markdown
             note.updated_at = now_iso()
             persist_note(runtime, note)
-            if access_changed:
+            if share_changed:
                 await enforce_share_access(runtime, note)
-            if title_changed or markdown_changed or access_changed:
+            if title_changed or markdown_changed or share_changed:
                 await broadcast_editor_hello(runtime, note)
                 await broadcast_note_update(runtime, note)
-            return _ok({"savedAt": note.updated_at, "shareAccess": note.share_access})
+            ticket, url = share_link(runtime, request, note)
+            return _ok(
+                {
+                    "savedAt": note.updated_at,
+                    "shareAccess": note.share_access,
+                    "shareId": ticket,
+                    "shareUrl": url,
+                }
+            )
 
     @app.delete("/api/notes/{note_id}")
     async def notes_delete(request: Request, note_id: str):
@@ -435,7 +454,7 @@ def register_routes(app: FastAPI) -> None:
             note, missing = _note_or_error(runtime, note_id)
             if missing:
                 return missing
-            return _collab_payload(request, note)
+            return _collab_payload(runtime, request, note)
 
     @app.post("/api/render")
     async def render_route(request: Request):
@@ -667,7 +686,7 @@ def register_routes(app: FastAPI) -> None:
             note, missing = _share_or_error(runtime, request, share_id, "edit")
             if missing:
                 return missing
-            return _collab_payload(request, note)
+            return _collab_payload(runtime, request, note)
 
     @app.post("/api/share/{share_id}/render")
     async def share_render(request: Request, share_id: str):
@@ -897,13 +916,14 @@ def _replace_json(response: JSONResponse, status: int, payload: dict) -> JSONRes
     return response
 
 
-def _collab_payload(request: Request, note) -> JSONResponse:
+def _collab_payload(runtime, request: Request, note) -> JSONResponse:
+    ticket, url = share_link(runtime, request, note)
     return _ok(
         {
             "noteId": note.id,
             "title": note.title,
-            "shareId": note.share_id,
-            "shareUrl": share_url(request, note.share_id),
+            "shareId": ticket,
+            "shareUrl": url,
             "serverCounter": note.collab.server_counter,
             "collabState": save_collab_state(note.collab),
         }

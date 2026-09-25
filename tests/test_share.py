@@ -8,24 +8,31 @@ def test_share_access_levels(client, app):
     created = client.post("/api/notes")
     note_id = created.json()["note"]["id"]
     client.put(f"/api/notes/{note_id}", json={"markdown": "hello world"})
-    share_id = client.get(f"/api/notes/{note_id}").json()["note"]["shareId"]
+    hidden = client.get(f"/api/notes/{note_id}").json()["note"]
+    assert hidden["shareId"] is None
+    assert hidden["shareUrl"] == ""
 
     anon = TestClient(app, follow_redirects=False)
-    hidden = anon.get(f"/api/share/{share_id}")
-    assert hidden.status_code == 404
-    assert hidden.json()["error"] == "Shared note not found."
-    assert anon.get(f"/s/{share_id}").status_code == 404
+    missing = anon.get("/api/share/not-a-ticket")
+    assert missing.status_code == 404
+    assert missing.json()["error"] == "Shared note not found."
+    assert anon.get("/s/not-a-ticket").status_code == 404
 
-    client.put(f"/api/notes/{note_id}", json={"shareAccess": "view"})
+    share_id = client.put(f"/api/notes/{note_id}", json={"shareAccess": "view"}).json()["shareId"]
     viewed = anon.get(f"/api/share/{share_id}")
     assert viewed.status_code == 200
     assert viewed.json()["note"]["markdown"] == "hello world"
-    assert anon.get(f"/s/{share_id}").status_code == 200
-    assert 'data-share-access="view"' in anon.get(f"/s/{share_id}").text
+    page = anon.get(f"/s/{share_id}")
+    assert page.status_code == 200
+    assert 'data-share-access="view"' in page.text
+    assert f'data-share-id="{share_id}"' in page.text
     assert anon.post(f"/api/share/{share_id}/threads", json={"body": "x"}).status_code == 404
     assert anon.post(f"/api/share/{share_id}/edit", json={"edits": [{"oldText": "hello", "newText": "hi"}]}).status_code == 404
 
-    client.put(f"/api/notes/{note_id}", json={"shareAccess": "comment"})
+    previous = share_id
+    share_id = client.put(f"/api/notes/{note_id}", json={"shareAccess": "comment"}).json()["shareId"]
+    assert share_id != previous
+    assert anon.get(f"/api/share/{previous}").status_code == 404
     unnamed = anon.post(
         f"/api/share/{share_id}/threads",
         json={"anchor": {"quote": "hello", "prefix": "", "suffix": "", "start": 0, "end": 5}, "body": "note"},
@@ -49,7 +56,7 @@ def test_share_access_levels(client, app):
         json={"edits": [{"oldText": "hello", "newText": "hi"}]},
     ).status_code == 404
 
-    client.put(f"/api/notes/{note_id}", json={"shareAccess": "edit"})
+    share_id = client.put(f"/api/notes/{note_id}", json={"shareAccess": "edit"}).json()["shareId"]
     edited = anon.post(
         f"/api/share/{share_id}/edit",
         json={"edits": [{"oldText": "hello", "newText": "hi"}]},

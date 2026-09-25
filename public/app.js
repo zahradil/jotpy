@@ -415,11 +415,13 @@
           shareId: isPublic ? shareId : undefined,
           name: isPublic ? (state.viewer?.commenterName || "Anonymous") : "Owner",
           onReady: (payload) => {
+            const nextShareId = payload.shareId || "";
             state.note = {
               ...(state.note || {}),
               id: payload.noteId,
               title: payload.title,
-              shareId: payload.shareId,
+              shareId: nextShareId || null,
+              shareUrl: nextShareId ? `${location.origin}/s/${nextShareId}` : "",
               markdown: payload.markdown,
             };
             if (refs.titleInput && document.activeElement !== refs.titleInput) {
@@ -919,7 +921,8 @@
     if (!popover) return;
     if (!popover.classList.contains("hidden")) { popover.classList.add("hidden"); return; }
     const access = state.note?.shareAccess || "none";
-    const shareUrl = `${location.origin}/s/${state.note?.shareId || ""}`;
+    let shareUrl = access === "none" ? "" : (state.note?.shareUrl || (state.note?.shareId ? `${location.origin}/s/${state.note.shareId}` : ""));
+    const copyOff = !shareUrl;
     popover.innerHTML = `
       <div class="share-popover-row">
         <select id="shareAccessSelect">
@@ -928,25 +931,43 @@
           <option value="comment" ${access === "comment" ? "selected" : ""}>View & comment</option>
           <option value="edit" ${access === "edit" ? "selected" : ""}>Edit & comment</option>
         </select>
-        <jot-button variant="default" size="sm" id="shareCopyBtn" class="${access === "none" ? "share-copy-disabled" : ""}" ${access === "none" ? "disabled" : ""}>copy link</jot-button>
+        <jot-button variant="default" size="sm" id="shareCopyBtn" class="${copyOff ? "share-copy-disabled" : ""}" ${copyOff ? "disabled" : ""}>copy link</jot-button>
+      </div>
+      <div class="share-popover-row">
+        <jot-button variant="ghost" size="sm" id="shareRotateBtn" class="${access === "none" ? "share-copy-disabled" : ""}" ${access === "none" ? "disabled" : ""}>new link</jot-button>
       </div>
     `;
     popover.classList.remove("hidden");
     const select = popover.querySelector("#shareAccessSelect");
     const copyBtn = popover.querySelector("#shareCopyBtn");
+    const rotateBtn = popover.querySelector("#shareRotateBtn");
+    const applyShare = (saved) => {
+      state.note.shareAccess = saved.shareAccess;
+      state.note.shareId = saved.shareId || null;
+      state.note.shareUrl = saved.shareUrl || "";
+      shareUrl = state.note.shareUrl;
+      const nextCopyOff = !shareUrl;
+      copyBtn.disabled = nextCopyOff;
+      copyBtn.classList.toggle("share-copy-disabled", nextCopyOff);
+      const rotateOff = saved.shareAccess === "none";
+      rotateBtn.disabled = rotateOff;
+      rotateBtn.classList.toggle("share-copy-disabled", rotateOff);
+    };
     select.addEventListener("change", async () => {
       if (!state.note) return;
-      const val = select.value;
-      state.note.shareAccess = val;
-      await api(`/api/notes/${state.note.id}`, { method: "PUT", body: { shareAccess: val } });
-      if (val === "none") {
-        copyBtn.disabled = true; copyBtn.classList.add("share-copy-disabled");
-      } else {
-        copyBtn.disabled = false; copyBtn.classList.remove("share-copy-disabled");
-      }
+      const saved = await api(`/api/notes/${state.note.id}`, { method: "PUT", body: { shareAccess: select.value } });
+      applyShare(saved);
+    });
+    rotateBtn.addEventListener("click", async () => {
+      if (!state.note || select.value === "none") return;
+      const saved = await api(`/api/notes/${state.note.id}`, {
+        method: "PUT",
+        body: { shareAccess: select.value, rotateShare: true },
+      });
+      applyShare(saved);
     });
     copyBtn.addEventListener("click", async () => {
-      if (select.value === "none") return;
+      if (!shareUrl || select.value === "none") return;
       try { await navigator.clipboard.writeText(shareUrl); setButtonLabel(copyBtn, "copied!"); setTimeout(() => { setButtonLabel(copyBtn, "copy link"); }, 1500); } catch {}
     });
     const closeHandler = (e) => { if (!popover.contains(e.target) && e.target.id !== "shareButton") { popover.classList.add("hidden"); document.removeEventListener("click", closeHandler); } };
@@ -954,82 +975,25 @@
   }
 
   function openAgentModal(refs) {
-    const baseUrl = `${location.protocol}//${location.host}`;
-    const currentNoteId = state.note?.id || "<note-id>";
-    const isOwnerView = state.viewer?.isOwner;
-
-    const lines = [];
-    if (isOwnerView) {
-      lines.push(
-        `# Your user wants you to interact with a jot note using the CLI below.`,
-        `# Run the commands as needed to read, edit, and comment on the note.`,
-        ``,
-        `npm install -g @mariozechner/jot`,
-        ``,
-        `# Connect`,
-        `jot register my-jot ${baseUrl} <YOUR_API_KEY>`,
-        ``,
-        `# List notes`,
-        `jot my-jot list`,
-        ``,
-        `# Read this note (includes thread/message IDs)`,
-        `jot my-jot read ${currentNoteId}`,
-        ``,
-        `# Create a note`,
-        `jot my-jot create "My note title"`,
-        ``,
-        `# Edit this note`,
-        `jot my-jot edit ${currentNoteId} '[{"oldText":"...","newText":"..."}]'`,
-        ``,
-        `# Comment on text in this note`,
-        `jot my-jot comment ${currentNoteId} "quoted text" "comment body"`,
-        ``,
-        `# Reply to a specific message`,
-        `jot my-jot reply ${currentNoteId} <thread-id> <message-id> "reply"`,
-        ``,
-        `# Edit or delete a comment`,
-        `jot my-jot edit-comment ${currentNoteId} <message-id> "new body"`,
-        `jot my-jot delete-comment ${currentNoteId} <message-id>`,
-        ``,
-        `# Resolve, reopen, or delete a thread`,
-        `jot my-jot resolve ${currentNoteId} <thread-id>`,
-        `jot my-jot reopen ${currentNoteId} <thread-id>`,
-        `jot my-jot delete-thread ${currentNoteId} <thread-id>`,
-        ``,
-        `# Full command reference`,
-        `jot --help`,
-      );
+    const origin = `${location.protocol}//${location.host}`;
+    const skillUrl = `${origin}/skill/jot/SKILL.md`;
+    const isOwnerView = Boolean(state.viewer?.isOwner);
+    const onSharePage = page === "public";
+    const access = state.note?.shareAccess || (onSharePage ? shareAccess : "none");
+    const ticket = onSharePage ? shareId : (state.note?.shareId || "");
+    const lines = [
+      "Stáhni a nainstaluj skill z této adresy:",
+      skillUrl,
+      "",
+    ];
+    if (isOwnerView && access === "none") {
+      lines.push("Sdílení je vypnuté a odkaz na poznámku ještě není.");
     } else {
-      const shareUrl = `${baseUrl}/s/${state.note?.shareId || shareId}`;
-      lines.push(
-        `# Your user wants you to interact with a shared jot note using the CLI below.`,
-        `# Run the commands as needed to read, edit, and comment on the note.`,
-        ``,
-        `npm install -g @mariozechner/jot`,
-        ``,
-        `# Connect to the shared note`,
-        `jot register my-jot ${shareUrl}`,
-        ``,
-        `# Read the note (includes thread/message IDs)`,
-        `jot my-jot read`,
-        ``,
-        `# Edit the note (if edit access)`,
-        `jot my-jot edit '[{"oldText":"...","newText":"..."}]'`,
-        ``,
-        `# Comment on text`,
-        `jot my-jot comment "quoted text" "comment body" --name="My Agent"`,
-        ``,
-        `# Reply to a specific message`,
-        `jot my-jot reply <thread-id> <message-id> "reply" --name="My Agent"`,
-        ``,
-        `# Full command reference`,
-        `jot --help`,
-      );
+      lines.push("Pak pracuj s poznámkou:");
+      lines.push(`${origin}/s/${ticket}`);
     }
     const instructions = lines.join("\n");
-    const hint = isOwnerView
-      ? "Create an API key in settings on the landing page, then give your agent these instructions:"
-      : "Give your agent these instructions to interact with this note:";
+    const hint = "Předej tenhle text agentovi.";
 
     if (!refs.modalBackdrop) return;
     state.modalOpen = true;
