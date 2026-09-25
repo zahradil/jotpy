@@ -7,7 +7,7 @@ import urllib.parse
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from jotpy.auth import (
     OWNER_TOKEN_KEY,
@@ -51,18 +51,40 @@ from jotpy.notes import (
     serialize_note_for_client,
     serialize_threads,
     share_link,
+    share_url,
     summarize_note,
     update_share,
     build_viewer_info,
 )
 from jotpy.pages import render_app_shell, render_auth_page, render_simple_page
+from jotpy.sheets import (
+    ROW_CAP,
+    QueryError,
+    SheetOpError,
+    TooManyRows,
+    commit_ops,
+    create_sheet,
+    delete_sheet_files,
+    ops_http_body,
+    persist_sheet,
+    require_sheet,
+    resolve_sheet_share,
+    run_sheet_query,
+    search_sheets,
+    sheet_for_client,
+    sheet_ticket,
+    summarize_sheet,
+)
 from jotpy.util import create_id, now_iso
 from jotpy.ws import (
     broadcast_editor_hello,
     broadcast_editor_mutation,
     broadcast_note_update,
+    broadcast_sheet,
     broadcast_threads_updated,
+    close_sheet_clients,
     enforce_share_access,
+    enforce_sheet_share,
     websocket_endpoint,
 )
 
@@ -117,6 +139,59 @@ def _share_or_error(runtime, request: Request, ticket: str, minimum: str):
     if note is None:
         return None, _error(404, "Shared note not found.")
     return note, None
+
+
+def _sheet_or_error(runtime, sheet_id: str):
+    sheet = runtime.sheets.get(sheet_id)
+    if sheet is None:
+        return None, _error(404, "Sheet not found.")
+    return sheet, None
+
+
+def _sheet_format(request: Request) -> str | None:
+    raw = request.query_params.get("format")
+    if raw is None or raw == "":
+        return "json"
+    fmt = raw.lower()
+    if fmt not in ("json", "csv"):
+        return None
+    return fmt
+
+
+def _sheet_op_error(exc: SheetOpError) -> JSONResponse:
+    body: dict = {"ok": False, "error": exc.error}
+    if exc.op is not None:
+        body["op"] = exc.op
+    if exc.version is not None:
+        body["version"] = exc.version
+    return JSONResponse(body, status_code=exc.status)
+
+
+def _sheet_data_response(sheet, query: str | None, fmt: str | None):
+    if fmt is None:
+        return _error(400, "Invalid format.")
+    try:
+        payload, csv_text = run_sheet_query(sheet, query)
+    except QueryError as exc:
+        return _error(400, exc.message)
+    except TooManyRows:
+        return _error(400, "Result exceeds 2000 rows. Narrow the condition.")
+    if fmt == "csv":
+        return Response(
+            content=csv_text,
+            media_type="text/csv; charset=utf-8",
+            headers={"X-Jot-Version": str(sheet.version)},
+        )
+    return _ok(payload)
+
+
+async def _sheet_ops_response(runtime, sheet, body: dict):
+    try:
+        updated, inserted = commit_ops(runtime, sheet, body.get("baseVersion"), body.get("ops"))
+    except SheetOpError as exc:
+        return _sheet_op_error(exc)
+    await broadcast_sheet(runtime, updated)
+    return _ok(ops_http_body(updated, inserted))
 
 
 def _skill_markdown_path() -> Path:
@@ -211,16 +286,23 @@ def register_routes(app: FastAPI) -> None:
         runtime = request.app.state.runtime
         async with runtime.lock:
             resolved = resolve_share(runtime, share_id)
-            if resolved is None:
-                return _page_missing("Not found", "<p>Shared note not found.</p>")
-            note, access = resolved
-            return HTMLResponse(
-                render_app_shell(
-                    "public",
-                    note.title,
-                    {"shareId": share_id, "shareAccess": access},
+            if resolved is not None:
+                note, access = resolved
+                return HTMLResponse(
+                    render_app_shell(
+                        "public",
+                        note.title,
+                        {"shareId": share_id, "shareAccess": access},
+                    )
                 )
-            )
+            sheet_resolved = resolve_sheet_share(runtime, share_id)
+            if sheet_resolved is None:
+                return _page_missing("Not found", "<p>Shared note not found.</p>")
+            sheet, access = sheet_resolved
+            data = {"sheetId": sheet.id, "shareId": share_id, "shareAccess": access}
+            if len(sheet.rows) > ROW_CAP:
+                data["tooLarge"] = "1"
+            return HTMLResponse(render_app_shell("sheet", sheet.title, data))
 
     @app.get("/api/viewer")
     async def viewer(request: Request):
@@ -898,6 +980,149 @@ def register_routes(app: FastAPI) -> None:
             note.updated_at = now_iso()
             await _save_threads(runtime, note)
             return _ok({"threads": serialize_threads(runtime, note, request)})
+
+    @app.get("/sheets/{sheet_id}")
+    async def sheet_page(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            if not is_owner_authenticated(runtime, request.headers):
+                return RedirectResponse("/login", status_code=302)
+            sheet = runtime.sheets.get(sheet_id)
+            if sheet is None:
+                return _page_missing("Not found", "<p>Sheet not found.</p><p><a href=\"/\">Back</a></p>")
+            data = {"sheetId": sheet.id}
+            if len(sheet.rows) > ROW_CAP:
+                data["tooLarge"] = "1"
+            return HTMLResponse(render_app_shell("sheet", sheet.title, data))
+
+    @app.get("/api/sheets")
+    async def sheets_list(request: Request):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            query = str(request.query_params.get("q") or "")
+            return _ok({"sheets": search_sheets(runtime, query)})
+
+    @app.post("/api/sheets")
+    async def sheets_create(request: Request):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet = create_sheet(runtime)
+            return _ok({"sheet": summarize_sheet(runtime, sheet)})
+
+    @app.get("/api/sheets/{sheet_id}")
+    async def sheets_get(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet, missing = _sheet_or_error(runtime, sheet_id)
+            if missing:
+                return missing
+            return _ok({"sheet": sheet_for_client(runtime, request, sheet)})
+
+    @app.put("/api/sheets/{sheet_id}")
+    async def sheets_put(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        body = await read_json_object(request)
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet, missing = _sheet_or_error(runtime, sheet_id)
+            if missing:
+                return missing
+            if "title" in body:
+                raw_title = body.get("title")
+                next_title = normalize_title(sheet.title if not raw_title else str(raw_title))
+            else:
+                next_title = sheet.title
+            if "shareAccess" in body and body.get("shareAccess") in ("none", "view", "edit"):
+                next_access = body["shareAccess"]
+            else:
+                next_access = sheet.share_access
+            sheet.title = next_title
+            share_changed = update_share(sheet, next_access, body.get("rotateShare") is True)
+            sheet.updated_at = now_iso()
+            persist_sheet(runtime, sheet)
+            if share_changed:
+                await enforce_sheet_share(runtime, sheet)
+            await broadcast_sheet(runtime, sheet)
+            ticket = sheet_ticket(runtime, sheet)
+            return _ok(
+                {
+                    "savedAt": sheet.updated_at,
+                    "title": sheet.title,
+                    "shareAccess": sheet.share_access,
+                    "shareId": ticket,
+                    "shareUrl": share_url(request, ticket) if ticket else "",
+                }
+            )
+
+    @app.delete("/api/sheets/{sheet_id}")
+    async def sheets_delete(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet, missing = _sheet_or_error(runtime, sheet_id)
+            if missing:
+                return missing
+            del runtime.sheets[sheet_id]
+            delete_sheet_files(runtime, sheet_id)
+            await close_sheet_clients(runtime, sheet_id)
+            return _ok()
+
+    @app.get("/api/sheets/{sheet_id}/data")
+    async def sheets_data(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet, missing = _sheet_or_error(runtime, sheet_id)
+            if missing:
+                return missing
+            return _sheet_data_response(sheet, request.query_params.get("q"), _sheet_format(request))
+
+    @app.post("/api/sheets/{sheet_id}/ops")
+    async def sheets_ops(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        body = await read_json_object(request)
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet, missing = _sheet_or_error(runtime, sheet_id)
+            if missing:
+                return missing
+            return await _sheet_ops_response(runtime, sheet, body)
+
+    @app.get("/api/share/{share_id}/data")
+    async def share_sheet_data(request: Request, share_id: str):
+        runtime = request.app.state.runtime
+        async with runtime.lock:
+            sheet = require_sheet(runtime, request, share_id, "view")
+            if sheet is None:
+                return _error(404, "Shared sheet not found.")
+            return _sheet_data_response(sheet, request.query_params.get("q"), _sheet_format(request))
+
+    @app.post("/api/share/{share_id}/ops")
+    async def share_sheet_ops(request: Request, share_id: str):
+        runtime = request.app.state.runtime
+        body = await read_json_object(request)
+        async with runtime.lock:
+            sheet = require_sheet(runtime, request, share_id, "edit")
+            if sheet is None:
+                return _error(404, "Shared sheet not found.")
+            return await _sheet_ops_response(runtime, sheet, body)
 
     @app.websocket("/")
     async def ws_route(websocket: WebSocket):

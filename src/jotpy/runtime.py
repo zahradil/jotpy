@@ -13,7 +13,9 @@ class Runtime:
     data_dir: Path
     notes_dir: Path
     auth_path: Path
+    sheets_dir: Path
     notes: dict[str, NoteRecord] = field(default_factory=dict)
+    sheets: dict = field(default_factory=dict)
     clients: list = field(default_factory=list)
     client_id_counter: int = 0
     next_color_index: int = 0
@@ -25,10 +27,20 @@ class Runtime:
         resolved = data_dir.resolve()
         resolved.mkdir(parents=True, exist_ok=True)
         notes_dir = resolved / "notes"
+        sheets_dir = resolved / "sheets"
         notes_dir.mkdir(parents=True, exist_ok=True)
-        runtime = cls(data_dir=resolved, notes_dir=notes_dir, auth_path=resolved / "auth.json")
+        sheets_dir.mkdir(parents=True, exist_ok=True)
+        runtime = cls(
+            data_dir=resolved,
+            notes_dir=notes_dir,
+            auth_path=resolved / "auth.json",
+            sheets_dir=sheets_dir,
+        )
         runtime.link_key = load_link_key(resolved)
         load_notes_into_memory(runtime)
+        from jotpy.sheets import load_sheets_into_memory
+
+        load_sheets_into_memory(runtime)
         return runtime
 
     def next_client_id(self) -> str:

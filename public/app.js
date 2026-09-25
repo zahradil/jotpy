@@ -135,6 +135,7 @@
           </div>
           <div class="topbar-right">
             <jot-icon-button icon="plus" label="New note" id="newNoteButton"></jot-icon-button>
+            <jot-icon-button icon="table" label="New table" id="newSheetButton"></jot-icon-button>
             <jot-icon-button icon="settings" label="Settings" id="settingsButton"></jot-icon-button>
             <jot-icon-button icon="logout" label="Logout" id="logoutButton"></jot-icon-button>
             <button type="button" class="jot-btn-icon jot-btn-icon--md theme-toggle" aria-label="Toggle theme">${themeIcon(document.documentElement.getAttribute("data-theme") || "dark")}</button>
@@ -142,7 +143,7 @@
         </header>
         <main class="list-page">
           <div class="list-search-wrap">
-            <input class="list-search" id="searchInput" type="text" placeholder="Search notes" autocomplete="off" />
+            <input class="list-search" id="searchInput" type="text" placeholder="Search" autocomplete="off" />
           </div>
           <div class="note-list" id="noteList"></div>
         </main>
@@ -153,6 +154,7 @@
     const searchInput = document.getElementById("searchInput");
     const noteList = document.getElementById("noteList");
     const newNoteButton = document.getElementById("newNoteButton");
+    const newSheetButton = document.getElementById("newSheetButton");
     const settingsButton = document.getElementById("settingsButton");
     const logoutButton = document.getElementById("logoutButton");
     const listModalBackdrop = document.getElementById("listModalBackdrop");
@@ -162,13 +164,18 @@
       window.location.href = `/notes/${payload.note.id}`;
     });
 
+    newSheetButton.addEventListener("click", async () => {
+      const payload = await api("/api/sheets", { method: "POST" });
+      window.location.href = `/sheets/${payload.sheet.id}`;
+    });
+
     logoutButton.addEventListener("click", logoutOwner);
     settingsButton.addEventListener("click", () => openSettingsModal());
 
     searchInput.addEventListener("input", () => {
       clearTimeout(state.searchTimer);
       state.searchTimer = setTimeout(() => {
-        loadNotes(searchInput.value);
+        loadDocuments(searchInput.value);
       }, 160);
     });
 
@@ -176,10 +183,20 @@
       const deleteBtn = event.target.closest(".note-delete-btn") || event.target.closest("jot-icon-button.note-delete-btn");
       if (deleteBtn) {
         event.stopPropagation();
-        const id = deleteBtn.dataset.noteId;
-        if (!id || !confirm("Delete this note?")) return;
-        await api(`/api/notes/${id}`, { method: "DELETE" });
-        loadNotes(searchInput.value);
+        if (deleteBtn.dataset.sheetId) {
+          if (!confirm("Delete this table?")) return;
+          await api(`/api/sheets/${deleteBtn.dataset.sheetId}`, { method: "DELETE" });
+        } else {
+          const id = deleteBtn.dataset.noteId;
+          if (!id || !confirm("Delete this note?")) return;
+          await api(`/api/notes/${id}`, { method: "DELETE" });
+        }
+        loadDocuments(searchInput.value);
+        return;
+      }
+      const sheetRow = event.target.closest("[data-sheet-id]");
+      if (sheetRow) {
+        window.location.href = `/sheets/${sheetRow.dataset.sheetId}`;
         return;
       }
       const row = event.target.closest("[data-note-id]");
@@ -187,7 +204,7 @@
       window.location.href = `/notes/${row.dataset.noteId}`;
     });
 
-    loadNotes("");
+    loadDocuments("");
 
     function openSettingsModal() {
       listModalBackdrop.classList.remove("hidden");
@@ -273,38 +290,68 @@
       renderKeys();
     }
 
-    async function loadNotes(query) {
-      const response = await api(`/api/notes?q=${encodeURIComponent(query)}`);
-      const hasNotes = response.notes.length > 0;
+    async function loadDocuments(query) {
+      const [notesResponse, sheetsResponse] = await Promise.all([
+        api(`/api/notes?q=${encodeURIComponent(query)}`),
+        api(`/api/sheets?q=${encodeURIComponent(query)}`),
+      ]);
+      const items = [
+        ...notesResponse.notes.map((note) => ({ ...note, kind: "note" })),
+        ...sheetsResponse.sheets.map((sheet) => ({ ...sheet, kind: "sheet" })),
+      ];
+      items.sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+      const hasItems = items.length > 0;
       const hasQuery = query.trim().length > 0;
 
-      document.querySelector(".list-search-wrap").style.display = (hasNotes || hasQuery) ? "" : "none";
+      document.querySelector(".list-search-wrap").style.display = (hasItems || hasQuery) ? "" : "none";
 
-      if (!hasNotes && !hasQuery) {
-        noteList.innerHTML = `<div class="empty-state-create"><p class="empty-state-text">No notes yet.</p><jot-button variant="primary" id="emptyCreateBtn">Create note</jot-button></div>`;
+      if (!hasItems && !hasQuery) {
+        noteList.innerHTML = `<div class="empty-state-create"><p class="empty-state-text">No notes or tables yet.</p><div class="empty-actions"><jot-button variant="primary" id="emptyCreateBtn">Create note</jot-button><jot-button variant="ghost" id="emptyCreateSheetBtn">Create table</jot-button></div></div>`;
         document.getElementById("emptyCreateBtn").addEventListener("click", async () => {
           const payload = await api("/api/notes", { method: "POST" });
           window.location.href = `/notes/${payload.note.id}`;
         });
+        document.getElementById("emptyCreateSheetBtn").addEventListener("click", async () => {
+          const payload = await api("/api/sheets", { method: "POST" });
+          window.location.href = `/sheets/${payload.sheet.id}`;
+        });
         return;
       }
 
-      noteList.innerHTML = hasNotes
-        ? response.notes
-            .map(
-              (note) => `
-                <div class="note-row" data-note-id="${escapeHtml(note.id)}">
-                  <div class="note-row-content">
-                    <div class="note-row-title">${escapeHtml(note.title || "untitled")}</div>
-                    <div class="note-row-snippet">${escapeHtml(note.snippet || "Empty note")}</div>
-                    <div class="note-row-meta">${escapeHtml(formatDate(note.updatedAt))}</div>
-                  </div>
-                  <jot-icon-button icon="trash" label="Delete note" class="note-delete-btn" data-note-id="${escapeHtml(note.id)}" danger></jot-icon-button>
-                </div>
-              `,
-            )
+      noteList.innerHTML = hasItems
+        ? items
+            .map((item) => item.kind === "sheet" ? sheetRowHtml(item) : noteRowHtml(item))
             .join("")
-        : `<div class="empty-state">No notes match your search.</div>`;
+        : `<div class="empty-state">Nothing matches your search.</div>`;
+    }
+
+    function noteRowHtml(note) {
+      return `
+        <div class="note-row" data-note-id="${escapeHtml(note.id)}">
+          <div class="note-row-content">
+            <div class="note-row-title">${escapeHtml(note.title || "untitled")}</div>
+            <div class="note-row-snippet">${escapeHtml(note.snippet || "Empty note")}</div>
+            <div class="note-row-meta">${escapeHtml(formatDate(note.updatedAt))}</div>
+          </div>
+          <jot-icon-button icon="trash" label="Delete note" class="note-delete-btn" data-note-id="${escapeHtml(note.id)}" danger></jot-icon-button>
+        </div>
+      `;
+    }
+
+    function sheetRowHtml(sheet) {
+      const snippet = !sheet.columnCount && !sheet.rowCount
+        ? "Empty table"
+        : `${sheet.columnCount} columns, ${sheet.rowCount} rows`;
+      return `
+        <div class="note-row" data-sheet-id="${escapeHtml(sheet.id)}">
+          <div class="note-row-content">
+            <div class="note-row-title">${escapeHtml(sheet.title || "untitled")}<span class="doc-kind">table</span></div>
+            <div class="note-row-snippet">${escapeHtml(snippet)}</div>
+            <div class="note-row-meta">${escapeHtml(formatDate(sheet.updatedAt))}</div>
+          </div>
+          <jot-icon-button icon="trash" label="Delete table" class="note-delete-btn" data-sheet-id="${escapeHtml(sheet.id)}" danger></jot-icon-button>
+        </div>
+      `;
     }
   }
 
