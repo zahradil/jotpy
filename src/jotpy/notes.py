@@ -106,14 +106,27 @@ def _share_from_meta(meta: dict) -> tuple[int, str, int | None]:
     return generation, access, day
 
 
+def document_id_taken(runtime, candidate: str) -> bool:
+    # Notes and sheets share one id space, so one ticket cannot name both.
+    if candidate in runtime.notes:
+        return True
+    sheets = getattr(runtime, "sheets", None)
+    if isinstance(sheets, dict) and candidate in sheets:
+        return True
+    if (runtime.notes_dir / f"{candidate}.md").exists() or (runtime.notes_dir / f"{candidate}.json").exists():
+        return True
+    sheets_dir = getattr(runtime, "sheets_dir", None)
+    if sheets_dir is not None and (sheets_dir / f"{candidate}.json").exists():
+        return True
+    return False
+
+
 def allocate_note_id(runtime) -> str:
     while True:
         candidate = create_short_id(5)
         if NOTE_ID_RE.fullmatch(candidate) is None:
             continue
-        if candidate in runtime.notes:
-            continue
-        if (runtime.notes_dir / f"{candidate}.md").exists() or (runtime.notes_dir / f"{candidate}.json").exists():
+        if document_id_taken(runtime, candidate):
             continue
         return candidate
 

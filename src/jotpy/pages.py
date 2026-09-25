@@ -81,13 +81,17 @@ def render_app_shell(page: str, title: str, data: dict | None = None) -> str:
         for part in (
             f'data-page="{page}"',
             f'data-note-id="{escape_html(data["noteId"])}"' if data.get("noteId") else "",
+            f'data-sheet-id="{escape_html(data["sheetId"])}"' if data.get("sheetId") else "",
             f'data-share-id="{escape_html(data["shareId"])}"' if data.get("shareId") else "",
             f'data-share-access="{escape_html(data["shareAccess"])}"' if data.get("shareAccess") else "",
+            f'data-sheet-share-id="{escape_html(data["sheetShareId"])}"' if data.get("sheetShareId") else "",
+            'data-too-large="1"' if data.get("tooLarge") else "",
         )
         if part
     )
+    script = "/static/sheet.js" if page == "sheet" else "/static/app.js"
     mermaid = ""
-    if page != "list":
+    if page not in ("list", "sheet"):
         mermaid = """
     <script type="module">
       import mermaid from "/static/mermaid/mermaid.esm.min.mjs";
@@ -109,6 +113,6 @@ def render_app_shell(page: str, title: str, data: dict | None = None) -> str:
     {_TOKEN_SCRIPT}
     {_THEME_SCRIPT}
     <script src="/static/components.js"></script>{mermaid}
-    <script src="/static/app.js" defer></script>
+    <script src="{script}" defer></script>
   </body>
 </html>"""

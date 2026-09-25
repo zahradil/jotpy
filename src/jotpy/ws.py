@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketState
 from jotpy.auth import get_commenter_identity, is_owner_authenticated
 from jotpy.collab import apply_client_mutations, save_collab_state
 from jotpy.notes import note_ticket, persist_note, resolve_share
+from jotpy.sheets import SheetOpError, commit_ops, resolve_sheet_share, sheet_ops_result, sheet_ws_payload
 from jotpy.util import now_iso
 
 CURSOR_COLORS = ["#4285f4", "#ea4335", "#34a853", "#fbbc04", "#9c27b0", "#ff6d00", "#00bcd4", "#e91e63"]
@@ -24,6 +25,7 @@ class ClientConn:
     name: str
     color: str
     selection: dict | None = None
+    sheet_id: str = ""
 
 
 def _collaborative(conn: ClientConn, note_id: str) -> bool:
@@ -105,6 +107,128 @@ async def enforce_share_access(runtime, note) -> None:
             continue
         if not _ticket_still_valid(runtime, conn):
             await _close_socket(conn.ws)
+
+
+def _on_sheet(conn: ClientConn, sheet_id: str) -> bool:
+    return conn.kind in ("sheet", "sheet-viewer") and conn.sheet_id == sheet_id
+
+
+def _sheet_ticket_still_valid(runtime, conn: ClientConn) -> bool:
+    if not conn.ticket:
+        return True
+    resolved = resolve_sheet_share(runtime, conn.ticket)
+    if resolved is None or resolved[0].id != conn.sheet_id:
+        return False
+    if conn.kind == "sheet" and resolved[1] != "edit":
+        return False
+    return True
+
+
+async def enforce_sheet_share(runtime, sheet) -> None:
+    for conn in list(runtime.clients):
+        if not _on_sheet(conn, sheet.id) or not conn.ticket:
+            continue
+        if not _sheet_ticket_still_valid(runtime, conn):
+            await _close_socket(conn.ws)
+
+
+async def close_sheet_clients(runtime, sheet_id: str) -> None:
+    for conn in list(runtime.clients):
+        if _on_sheet(conn, sheet_id):
+            await _close_socket(conn.ws)
+
+
+async def broadcast_sheet(runtime, sheet, skip: ClientConn | None = None) -> None:
+    message = {"type": "sheet", **sheet_ws_payload(runtime, sheet)}
+    for conn in runtime.clients:
+        if conn is skip or not _on_sheet(conn, sheet.id):
+            continue
+        await send_message(conn.ws, message)
+
+
+async def _broadcast_sheet_presence(runtime, sender: ClientConn, selection) -> None:
+    outgoing = {
+        "type": "presence",
+        "clientId": sender.client_id,
+        "name": sender.name,
+        "color": sender.color,
+        "selection": selection,
+    }
+    for conn in runtime.clients:
+        if conn is sender or not _on_sheet(conn, sender.sheet_id):
+            continue
+        await send_message(conn.ws, outgoing)
+
+
+async def _broadcast_sheet_presence_leave(runtime, sender: ClientConn) -> None:
+    outgoing = {"type": "presence-leave", "clientId": sender.client_id}
+    for conn in runtime.clients:
+        if conn is sender or not _on_sheet(conn, sender.sheet_id):
+            continue
+        await send_message(conn.ws, outgoing)
+
+
+async def _send_existing_sheet_presence(runtime, target: ClientConn) -> None:
+    for conn in runtime.clients:
+        if conn is target or not _on_sheet(conn, target.sheet_id) or not conn.selection:
+            continue
+        await send_message(
+            target.ws,
+            {
+                "type": "presence",
+                "clientId": conn.client_id,
+                "name": conn.name,
+                "color": conn.color,
+                "selection": conn.selection,
+            },
+        )
+
+
+async def _attach_sheet(runtime, ws: WebSocket, conn: ClientConn) -> None:
+    runtime.clients.append(conn)
+    message = {"type": "sheet", "clientId": conn.client_id, **sheet_ws_payload(runtime, runtime.sheets[conn.sheet_id])}
+    await send_message(ws, message)
+    await _send_existing_sheet_presence(runtime, conn)
+
+
+async def handle_sheet_message(runtime, conn: ClientConn, data: str) -> None:
+    import json
+
+    try:
+        message = json.loads(data)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(message, dict):
+        return
+    if message.get("type") == "presence":
+        if message.get("clientId") != conn.client_id:
+            return
+        selection = message.get("selection")
+        if selection is not None and not isinstance(selection, dict):
+            return
+        conn.selection = selection
+        await _broadcast_sheet_presence(runtime, conn, selection)
+        return
+    if message.get("type") != "ops" or message.get("clientId") != conn.client_id:
+        return
+    if conn.kind == "sheet-viewer":
+        await send_message(conn.ws, {"type": "ops-result", "ok": False, "error": "Read only."})
+        return
+    sheet = runtime.sheets.get(conn.sheet_id)
+    if sheet is None:
+        return
+    try:
+        updated, inserted = commit_ops(runtime, sheet, message.get("baseVersion"), message.get("ops"))
+    except SheetOpError as exc:
+        body = {"type": "ops-result", "ok": False, "error": exc.error}
+        if exc.op is not None:
+            body["op"] = exc.op
+        if exc.version is not None:
+            body["version"] = exc.version
+        await send_message(conn.ws, body)
+        return
+    await broadcast_sheet(runtime, updated, skip=conn)
+    await send_message(conn.ws, sheet_ops_result(runtime, updated, inserted))
 
 
 async def _send_existing_presence(runtime, target: ClientConn) -> None:
@@ -254,6 +378,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     runtime = websocket.app.state.runtime
     await websocket.accept()
     note_id = websocket.query_params.get("noteId") or ""
+    sheet_id = websocket.query_params.get("sheetId") or ""
     share_id = websocket.query_params.get("shareId") or ""
     conn: ClientConn | None = None
     async with runtime.lock:
@@ -275,11 +400,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         color=runtime.next_color(CURSOR_COLORS),
                     )
                     await _attach(runtime, websocket, conn, True)
-        elif share_id:
-            resolved = resolve_share(runtime, share_id)
-            if resolved is None:
+        elif sheet_id:
+            if not is_owner_authenticated(runtime, websocket.headers):
                 await websocket.close()
             else:
+                sheet = runtime.sheets.get(sheet_id)
+                if sheet is None:
+                    await websocket.close()
+                else:
+                    conn = ClientConn(
+                        ws=websocket,
+                        kind="sheet",
+                        note_id="",
+                        ticket="",
+                        client_id=runtime.next_client_id(),
+                        name="Owner",
+                        color=runtime.next_color(CURSOR_COLORS),
+                        sheet_id=sheet.id,
+                    )
+                    await _attach_sheet(runtime, websocket, conn)
+        elif share_id:
+            resolved = resolve_share(runtime, share_id)
+            if resolved is not None:
                 note, access = resolved
                 if access == "edit":
                     commenter_name = get_commenter_identity(websocket.headers)["name"]
@@ -304,6 +446,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         color="",
                     )
                     await _attach(runtime, websocket, conn, False)
+            else:
+                sheet_resolved = resolve_sheet_share(runtime, share_id)
+                if sheet_resolved is None:
+                    await websocket.close()
+                else:
+                    sheet, access = sheet_resolved
+                    commenter_name = get_commenter_identity(websocket.headers)["name"]
+                    conn = ClientConn(
+                        ws=websocket,
+                        kind="sheet" if access == "edit" else "sheet-viewer",
+                        note_id="",
+                        ticket=share_id,
+                        client_id=runtime.next_client_id(),
+                        name=commenter_name or "Anonymous",
+                        color=runtime.next_color(CURSOR_COLORS),
+                        sheet_id=sheet.id,
+                    )
+                    await _attach_sheet(runtime, websocket, conn)
         else:
             await websocket.close()
     if conn is None:
@@ -317,6 +477,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if text is None and incoming.get("bytes") is not None:
                 text = incoming["bytes"].decode("utf-8", "replace")
             async with runtime.lock:
+                if conn.kind in ("sheet", "sheet-viewer"):
+                    if not _sheet_ticket_still_valid(runtime, conn):
+                        await _close_socket(websocket)
+                        break
+                    if text is None:
+                        continue
+                    await handle_sheet_message(runtime, conn, text)
+                    continue
                 if not _ticket_still_valid(runtime, conn):
                     await _close_socket(websocket)
                     break
@@ -337,3 +505,5 @@ async def _drop_client(runtime, conn: ClientConn) -> None:
             return
         if conn.kind in ("editor", "public-editor"):
             await _broadcast_presence_leave(runtime, conn)
+        elif conn.kind in ("sheet", "sheet-viewer"):
+            await _broadcast_sheet_presence_leave(runtime, conn)
