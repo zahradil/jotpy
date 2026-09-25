@@ -379,6 +379,9 @@ input:focus, textarea:focus { border-color: var(--muted); }
 .share-popover-row button { padding: 0.4rem 0.7rem; font-size: 0.82rem; border-radius: 6px; white-space: nowrap; }
 .share-copy-disabled { opacity: 0.35; cursor: default; }
 .share-copy-disabled:hover { background: transparent; }
+.share-link-label { flex: 1; color: var(--muted); font-size: 0.82rem; white-space: nowrap; }
+.share-popover-row button:disabled { opacity: 0.35; cursor: default; }
+.share-error { margin: 0.5rem 0 0; color: var(--danger); font-size: 0.8rem; }
 
 /* --- Disconnected banner --- */
 .editor-disconnected {

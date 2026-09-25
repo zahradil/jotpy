@@ -50,8 +50,11 @@ from jotpy.notes import (
     search_notes,
     serialize_note_for_client,
     serialize_threads,
+    ShareLimitReached,
+    link_expires,
+    note_ticket,
+    share_fields,
     share_link,
-    share_url,
     summarize_note,
     update_share,
     build_viewer_info,
@@ -168,7 +171,8 @@ def _sheet_op_error(exc: SheetOpError) -> JSONResponse:
     return JSONResponse(body, status_code=exc.status)
 
 
-def _sheet_data_response(sheet, query: str | None, fmt: str | None):
+def _sheet_data_response(sheet, query: str | None, fmt: str | None, link: dict | None = None):
+    """link carries linkExpires for a shared link; the owner's own calls leave it out."""
     if fmt is None:
         return _error(400, "Invalid format.")
     try:
@@ -181,9 +185,12 @@ def _sheet_data_response(sheet, query: str | None, fmt: str | None):
         return Response(
             content=csv_text,
             media_type="text/csv; charset=utf-8",
-            headers={"X-Jot-Version": str(sheet.version)},
+            headers={
+                "X-Jot-Version": str(sheet.version),
+                **({"X-Jot-Link-Expires": link["linkExpires"] or "never"} if link else {}),
+            },
         )
-    return _ok(payload)
+    return _ok({**payload, **(link or {})})
 
 
 async def _sheet_ops_response(runtime, sheet, body: dict):
@@ -337,14 +344,19 @@ def register_routes(app: FastAPI) -> None:
                     render_app_shell(
                         "public",
                         note.title,
-                        {"shareId": share_id, "shareAccess": access},
+                        {"shareId": share_id, "shareAccess": access, "linkExpires": link_expires(runtime, share_id)},
                     )
                 )
             sheet_resolved = resolve_sheet_share(runtime, share_id)
             if sheet_resolved is None:
                 return _page_missing("Not found", "<p>Shared note not found.</p>")
             sheet, access = sheet_resolved
-            data = {"sheetId": sheet.id, "shareId": share_id, "shareAccess": access}
+            data = {
+                "sheetId": sheet.id,
+                "shareId": share_id,
+                "shareAccess": access,
+                "linkExpires": link_expires(runtime, share_id),
+            }
             if len(sheet.rows) > ROW_CAP:
                 data["tooLarge"] = "1"
             return HTMLResponse(render_app_shell("sheet", sheet.title, data))
@@ -533,10 +545,15 @@ def register_routes(app: FastAPI) -> None:
                 next_access = body["shareAccess"]
             else:
                 next_access = note.share_access
+            try:
+                share_changed = update_share(
+                    note, next_access, body.get("rotateShare") is True, body.get("renewLink") is True
+                )
+            except ShareLimitReached:
+                return _error(409, "This note has used up its share links.")
             title_changed = next_title != note.title
             markdown_changed = next_markdown != note.markdown
             note.title = next_title
-            share_changed = update_share(note, next_access, body.get("rotateShare") is True)
             if markdown_changed:
                 note.collab = collab_from_markdown(next_markdown, note.collab.server_counter + 1)
                 note.markdown = next_markdown
@@ -547,15 +564,7 @@ def register_routes(app: FastAPI) -> None:
             if title_changed or markdown_changed or share_changed:
                 await broadcast_editor_hello(runtime, note)
                 await broadcast_note_update(runtime, note)
-            ticket, url = share_link(runtime, request, note)
-            return _ok(
-                {
-                    "savedAt": note.updated_at,
-                    "shareAccess": note.share_access,
-                    "shareId": ticket,
-                    "shareUrl": url,
-                }
-            )
+            return _ok({"savedAt": note.updated_at, **share_fields(runtime, request, note_ticket, note)})
 
     @app.delete("/api/notes/{note_id}")
     async def notes_delete(request: Request, note_id: str):
@@ -784,7 +793,7 @@ def register_routes(app: FastAPI) -> None:
             note, missing = _share_or_error(runtime, request, share_id, "view")
             if missing:
                 return missing
-            return _ok(serialize_note_for_client(runtime, note, request))
+            return _ok({**serialize_note_for_client(runtime, note, request), "linkExpires": link_expires(runtime, share_id)})
 
     @app.get("/api/share/{share_id}/note")
     async def share_note(request: Request, share_id: str):
@@ -1095,21 +1104,23 @@ def register_routes(app: FastAPI) -> None:
                 next_access = body["shareAccess"]
             else:
                 next_access = sheet.share_access
+            try:
+                share_changed = update_share(
+                    sheet, next_access, body.get("rotateShare") is True, body.get("renewLink") is True
+                )
+            except ShareLimitReached:
+                return _error(409, "This sheet has used up its share links.")
             sheet.title = next_title
-            share_changed = update_share(sheet, next_access, body.get("rotateShare") is True)
             sheet.updated_at = now_iso()
             persist_sheet(runtime, sheet)
             if share_changed:
                 await enforce_sheet_share(runtime, sheet)
             await broadcast_sheet(runtime, sheet)
-            ticket = sheet_ticket(runtime, sheet)
             return _ok(
                 {
                     "savedAt": sheet.updated_at,
                     "title": sheet.title,
-                    "shareAccess": sheet.share_access,
-                    "shareId": ticket,
-                    "shareUrl": share_url(request, ticket) if ticket else "",
+                    **share_fields(runtime, request, sheet_ticket, sheet),
                 }
             )
 
@@ -1175,7 +1186,8 @@ def register_routes(app: FastAPI) -> None:
             sheet = require_sheet(runtime, request, share_id, "view")
             if sheet is None:
                 return _error(404, "Shared sheet not found.")
-            return _sheet_data_response(sheet, request.query_params.get("q"), _sheet_format(request))
+            link = {"linkExpires": link_expires(runtime, share_id)}
+            return _sheet_data_response(sheet, request.query_params.get("q"), _sheet_format(request), link)
 
     @app.post("/api/share/{share_id}/ops")
     async def share_sheet_ops(request: Request, share_id: str):

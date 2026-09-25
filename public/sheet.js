@@ -3,6 +3,7 @@
   const sheetId = document.body.dataset.sheetId || "";
   const shareId = document.body.dataset.shareId || "";
   const shareAccess = document.body.dataset.shareAccess || "";
+  const linkExpires = document.body.dataset.linkExpires || "";
   const tooLargeAtStart = document.body.dataset.tooLarge === "1";
   if (!app || document.body.dataset.page !== "sheet" || !sheetId) return;
 
@@ -63,6 +64,9 @@
     const title = canEdit && !isPublic
       ? `<input id="titleInput" class="title-input" type="text" spellcheck="false" value="${escapeHtml(state.title)}" />`
       : `<div class="topbar-title" id="titleText">${escapeHtml(state.title)}</div>`;
+    const validity = isPublic && linkExpires
+      ? `<span class="status-text">${linkExpires === "never" ? "permanent link" : `link valid until ${formatDay(linkExpires)}`}</span>`
+      : "";
     const share = isPublic
       ? ""
       : `<div class="share-popover-wrap" id="sharePopoverWrap"><jot-icon-button icon="share" label="Share" id="shareButton"></jot-icon-button><div class="share-popover hidden" id="sharePopover"></div></div>`;
@@ -72,6 +76,7 @@
           <div class="topbar-left">
             ${back}
             ${title}
+            ${validity}
             <span class="status-text sheet-version" id="sheetVersion"></span>
             <span class="status-text" id="saveStatus"></span>
           </div>
@@ -116,12 +121,16 @@
     if (shareButton) shareButton.addEventListener("click", (event) => { event.stopPropagation(); toggleShare(); });
     const agentButton = document.getElementById("agentButton");
     if (agentButton) {
-      agentButton.addEventListener("click", () => {
-        if (!isPublic && (state.shareAccess === "none" || !state.shareId)) return;
-        openAgentModal();
+      // The owner hands links to an agent from the share popover; a visitor only has the link they opened.
+      agentButton.addEventListener("click", (event) => {
+        if (isPublic) {
+          openAgentModal();
+        } else {
+          event.stopPropagation();
+          toggleShare();
+        }
       });
     }
-    syncAgentButton();
     gridHost.addEventListener("mousedown", onGridMouseDown);
     gridHost.addEventListener("dblclick", onGridDblClick);
     gridHost.addEventListener("keydown", onGridKeyDown);
@@ -848,8 +857,7 @@
     state.version = message.version;
     if (message.title) state.title = message.title;
     if ("shareAccess" in message && message.shareAccess) state.shareAccess = message.shareAccess;
-    if ("shareId" in message) state.shareId = message.shareId || null;
-    syncAgentButton();
+    if ("shareId" in message && !isPublic) state.shareId = message.shareId || null;
     state.columns = message.columns || [];
     state.rows = message.rows || [];
     if (titleInput && document.activeElement !== titleInput) titleInput.value = state.title;
@@ -977,7 +985,6 @@
     if (!popover) return;
     if (!popover.classList.contains("hidden")) { popover.classList.add("hidden"); return; }
     const access = state.shareAccess || "none";
-    const link = state.shareId ? `${location.origin}/s/${state.shareId}` : "";
     popover.innerHTML = `
       <div class="share-popover-row">
         <select id="shareAccessSelect">
@@ -985,42 +992,69 @@
           <option value="view" ${access === "view" ? "selected" : ""}>View only</option>
           <option value="edit" ${access === "edit" ? "selected" : ""}>Can edit</option>
         </select>
-        <button type="button" id="shareCopyBtn" ${link ? "" : "disabled"}>copy link</button>
+        <button type="button" id="shareRotateBtn" title="Issue new links; the current link and permalink stop working">rotate links</button>
       </div>
-      <div class="share-popover-row">
-        <button type="button" id="shareRotateBtn" ${access === "none" ? "disabled" : ""}>new link</button>
+      <div class="share-popover-row share-link-row">
+        <span class="share-link-label" id="shareLinkLabel">link</span>
+        <button type="button" id="shareCopyBtn">copy</button>
+        <button type="button" id="shareAgentBtn">for agent</button>
       </div>
+      <div class="share-popover-row share-link-row">
+        <span class="share-link-label">permalink</span>
+        <button type="button" id="sharePermaCopyBtn">copy</button>
+        <button type="button" id="sharePermaAgentBtn">for agent</button>
+      </div>
+      <p class="share-error hidden" id="shareError"></p>
     `;
     popover.classList.remove("hidden");
     const select = popover.querySelector("#shareAccessSelect");
-    const copyBtn = popover.querySelector("#shareCopyBtn");
     const rotateBtn = popover.querySelector("#shareRotateBtn");
+    const label = popover.querySelector("#shareLinkLabel");
+    const errorLine = popover.querySelector("#shareError");
+    const links = { url: "", permalink: "" };
+    const copyButtons = [
+      [popover.querySelector("#shareCopyBtn"), "copy", () => links.url],
+      [popover.querySelector("#shareAgentBtn"), "for agent", () => links.url && agentInstructions(links.url)],
+      [popover.querySelector("#sharePermaCopyBtn"), "copy", () => links.permalink],
+      [popover.querySelector("#sharePermaAgentBtn"), "for agent", () => links.permalink && agentInstructions(links.permalink)],
+    ];
     const apply = (saved) => {
       state.shareAccess = saved.shareAccess;
       state.shareId = saved.shareId || null;
-      const next = saved.shareUrl || (state.shareId ? `${location.origin}/s/${state.shareId}` : "");
-      copyBtn.disabled = !next;
+      links.url = saved.shareUrl || "";
+      links.permalink = saved.sharePermalink || "";
+      label.textContent = saved.shareExpires ? `link · until ${formatDay(saved.shareExpires)}` : "link";
       rotateBtn.disabled = saved.shareAccess === "none";
-      syncAgentButton();
-      copyBtn.onclick = async () => {
-        if (!next) return;
-        try { await navigator.clipboard.writeText(next); copyBtn.textContent = "copied!"; } catch {}
-      };
+      for (const [button, , text] of copyButtons) button.disabled = !text();
     };
-    select.addEventListener("change", async () => {
-      apply(await api(`/api/sheets/${sheetId}`, { method: "PUT", body: { shareAccess: select.value } }));
+    const put = async (body) => {
+      errorLine.classList.add("hidden");
+      try {
+        apply(await api(`/api/sheets/${sheetId}`, { method: "PUT", body }));
+      } catch (error) {
+        errorLine.textContent = error.message;
+        errorLine.classList.remove("hidden");
+      }
+    };
+    apply({ shareAccess: access });
+    if (access !== "none") put({ renewLink: true });
+    select.addEventListener("change", () => put({ shareAccess: select.value }));
+    rotateBtn.addEventListener("click", () => {
+      if (select.value !== "none") put({ shareAccess: select.value, rotateShare: true });
     });
-    rotateBtn.addEventListener("click", async () => {
-      if (select.value === "none") return;
-      apply(await api(`/api/sheets/${sheetId}`, { method: "PUT", body: { shareAccess: select.value, rotateShare: true } }));
-    });
-    if (link) {
-      copyBtn.onclick = async () => {
-        try { await navigator.clipboard.writeText(link); copyBtn.textContent = "copied!"; } catch {}
-      };
+    for (const [button, idle, text] of copyButtons) {
+      button.addEventListener("click", async () => {
+        const value = text();
+        if (!value) return;
+        try {
+          await navigator.clipboard.writeText(value);
+          button.textContent = "copied!";
+          window.setTimeout(() => { button.textContent = idle; }, 1500);
+        } catch {}
+      });
     }
     const closeHandler = (event) => {
-      if (!popover.contains(event.target) && !event.target.closest("#shareButton")) {
+      if (!popover.contains(event.target) && !event.target.closest("#shareButton, #agentButton")) {
         popover.classList.add("hidden");
         document.removeEventListener("click", closeHandler);
       }
@@ -1028,21 +1062,22 @@
     window.setTimeout(() => document.addEventListener("click", closeHandler), 0);
   }
 
-  function openAgentModal() {
-    const origin = location.origin;
-    const ticket = isPublic ? shareId : state.shareId;
-    const lines = [
+  function agentInstructions(link) {
+    return [
       "Stáhni a nainstaluj skill z této adresy:",
-      `${origin}/skill/jot/SKILL.md`,
+      `${location.origin}/skill/jot/SKILL.md`,
       "",
-    ];
-    if (!ticket) {
-      lines.push("Sdílení je vypnuté a odkaz na tabulku ještě není.");
-    } else {
-      lines.push("Pak pracuj s tabulkou:");
-      lines.push(`${origin}/s/${ticket}`);
-    }
-    const instructions = lines.join("\n");
+      "Pak pracuj s tabulkou:",
+      link,
+    ].join("\n");
+  }
+
+  function formatDay(isoDay) {
+    return new Intl.DateTimeFormat("en", { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${isoDay}T00:00:00Z`));
+  }
+
+  function openAgentModal() {
+    const instructions = agentInstructions(`${location.origin}/s/${shareId}`);
     const backdrop = document.getElementById("modalBackdrop");
     if (!backdrop) return;
     backdrop.classList.remove("hidden");
@@ -1063,15 +1098,6 @@
     backdrop.querySelector("#agentCopyBtn").addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(instructions); backdrop.querySelector("#agentCopyBtn").textContent = "copied!"; } catch {}
     });
-  }
-
-  function syncAgentButton() {
-    const button = document.getElementById("agentButton");
-    if (!button || isPublic) return;
-    const off = state.shareAccess === "none" || !state.shareId;
-    button.classList.toggle("is-disabled", off);
-    const inner = button.querySelector("button");
-    if (inner) inner.disabled = off;
   }
 
   function setStatus(value) {

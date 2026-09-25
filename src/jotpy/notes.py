@@ -19,7 +19,16 @@ from jotpy.collab import (
 )
 from jotpy.js_text import count_occurrences, utf16_index_of, utf16_len, utf16_slice
 from jotpy.markdown_html import render_markdown
-from jotpy.tickets import NOTE_ID_RE, expiry_day, open_ticket, ticket_for, today_utc
+from jotpy.tickets import (
+    MAX_GENERATION,
+    NOTE_ID_RE,
+    PERMANENT_DAY,
+    end_day_iso,
+    expiry_day,
+    open_ticket,
+    ticket_for,
+    today_utc,
+)
 from jotpy.util import create_short_id, now_iso, read_json, write_json
 
 SHARE_LEVELS = {"none": 0, "view": 1, "comment": 2, "edit": 3}
@@ -251,7 +260,7 @@ def build_snippet(markdown: str, needle: str) -> str:
     return source[start:end]
 
 
-def note_ticket(runtime, note: NoteRecord) -> str | None:
+def note_ticket(runtime, note: NoteRecord, permanent: bool = False) -> str | None:
     if note.share_access not in ("view", "comment", "edit") or note.share_expires_day is None:
         return None
     return ticket_for(
@@ -259,7 +268,7 @@ def note_ticket(runtime, note: NoteRecord) -> str | None:
         note.id,
         note.share_access,
         note.share_generation,
-        note.share_expires_day,
+        PERMANENT_DAY if permanent else note.share_expires_day,
     )
 
 
@@ -297,7 +306,31 @@ def share_link(runtime, request, note: NoteRecord) -> tuple[str | None, str]:
     return ticket, share_url(request, ticket)
 
 
-def update_share(note: NoteRecord, next_access: str, rotate: bool) -> bool:
+class ShareLimitReached(Exception):
+    """The record used up its generations, so no further link can be issued."""
+
+
+def share_fields(runtime, request, ticket_fn, record) -> dict:
+    """The owner's view of sharing: the daily link, the permalink and the daily link's last day."""
+    ticket = ticket_fn(runtime, record)
+    permalink = ticket_fn(runtime, record, permanent=True)
+    return {
+        "shareAccess": record.share_access,
+        "shareId": ticket,
+        "shareUrl": share_url(request, ticket) if ticket else "",
+        "sharePermalink": share_url(request, permalink) if permalink else "",
+        "shareExpires": end_day_iso(record.share_expires_day) if ticket else None,
+    }
+
+
+def link_expires(runtime, ticket: str) -> str | None:
+    """Last valid day of a link that already resolved, or None when it never expires."""
+    opened = open_ticket(runtime.link_key, ticket, 0)
+    return end_day_iso(opened.end_day) if opened else None
+
+
+def update_share(note, next_access: str, rotate: bool, renew: bool = False) -> bool:
+    """Changing the level or rotating revokes every link; renewing only moves the daily link's last day."""
     if next_access not in ("none", "view", "comment", "edit"):
         return False
     if next_access == "none":
@@ -306,8 +339,12 @@ def update_share(note: NoteRecord, next_access: str, rotate: bool) -> bool:
         note.share_expires_day = None
         return changed
     if next_access == note.share_access and not rotate:
+        if renew:
+            note.share_expires_day = expiry_day()
         return False
-    note.share_generation = (note.share_generation + 1) % 256
+    if note.share_generation >= MAX_GENERATION:
+        raise ShareLimitReached()
+    note.share_generation += 1
     note.share_access = next_access
     note.share_expires_day = expiry_day()
     return True

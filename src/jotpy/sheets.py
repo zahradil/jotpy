@@ -5,9 +5,9 @@ import io
 from dataclasses import dataclass, field
 
 from jotpy.auth import is_owner_authenticated
-from jotpy.notes import allocate_note_id, share_url, update_share
+from jotpy.notes import allocate_note_id, share_fields, update_share
 from jotpy.sheet_query import ROW_CAP, QueryError, TooManyRows, execute
-from jotpy.tickets import NOTE_ID_RE, open_ticket, ticket_for, today_utc
+from jotpy.tickets import NOTE_ID_RE, PERMANENT_DAY, open_ticket, ticket_for, today_utc
 from jotpy.util import create_short_id, now_iso, read_json, write_json
 
 __all__ = [
@@ -313,7 +313,7 @@ def create_sheet(runtime) -> SheetRecord:
     return sheet
 
 
-def sheet_ticket(runtime, sheet: SheetRecord) -> str | None:
+def sheet_ticket(runtime, sheet: SheetRecord, permanent: bool = False) -> str | None:
     if sheet.share_access not in ("view", "edit") or sheet.share_expires_day is None:
         return None
     return ticket_for(
@@ -321,7 +321,7 @@ def sheet_ticket(runtime, sheet: SheetRecord) -> str | None:
         sheet.id,
         sheet.share_access,
         sheet.share_generation,
-        sheet.share_expires_day,
+        PERMANENT_DAY if permanent else sheet.share_expires_day,
     )
 
 
@@ -346,7 +346,6 @@ def search_sheets(runtime, query: str) -> list[dict]:
 
 
 def sheet_for_client(runtime, request, sheet: SheetRecord) -> dict:
-    ticket = sheet_ticket(runtime, sheet)
     return {
         "id": sheet.id,
         "title": sheet.title,
@@ -355,9 +354,7 @@ def sheet_for_client(runtime, request, sheet: SheetRecord) -> dict:
         "createdAt": sheet.created_at,
         "columnCount": len(sheet.columns),
         "rowCount": len(sheet.rows),
-        "shareAccess": sheet.share_access,
-        "shareId": ticket,
-        "shareUrl": share_url(request, ticket) if ticket else "",
+        **share_fields(runtime, request, sheet_ticket, sheet),
     }
 
 

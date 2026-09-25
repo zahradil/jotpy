@@ -24,11 +24,18 @@ Když adresa v zadání není, zeptej se na ni a nic nevolej.
 
 1. `GET /api/share/<shareId>`. Když vrátí poznámku, pracuj s tím, co vrátí teď.
 2. Když vrátí `404`, zkus `GET /api/share/<shareId>/data`. Když ten projde, odkaz vede na tabulku a platí sekce [Tabulka](#tabulka).
-3. Když `404` vrátí obojí, odkaz je špatný, prošlý, nebo sdílení vypnuli. Odkaz platí 24 až 48 hodin a nový vydá jen vlastník. Řekni to uživateli a nic dalšího nezkoušej.
+3. Když `404` vrátí obojí, odkaz je špatný, prošlý, nebo ho vlastník zneplatnil. Nový vydá jen vlastník. Řekni to uživateli a nic dalšího nezkoušej.
 4. U poznámky zvol operace podle `note.shareAccess`.
 5. Proveď jen změnu, kterou uživatel zadal. Text, o kterém nemluvil, nech beze změny.
 6. Když změna plyne z komentáře, po ní na to vlákno odpověz.
 7. Znovu načti poznámku nebo tabulku a teprve podle toho uživateli řekni, co v ní je.
+
+## Platnost odkazu
+
+Odpověď z `GET /api/share/<shareId>` i JSON z `/data` má `linkExpires`. U CSV je to hlavička `X-Jot-Link-Expires`.
+
+- Datum (`2026-09-27`) je poslední platný den UTC. Takový denní odkaz slouží jen pro tuhle práci. Neukládej ho na později.
+- `null` (u CSV `never`) je permalink. Nevyprší, dokud ho vlastník nezneplatní. Když ho máš používat opakovaně, ulož ho tam, kam ti uživatel řekne, a zacházej s ním jako s heslem: nevypisuj ho do výstupu, logů ani commitů.
 
 `canReply`, `canEdit` a `canResolve` v odpovědi popisují prohlížečovou session. Na rozhodnutí, jestli API volání projde, neslouží.
 

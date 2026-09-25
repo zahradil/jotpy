@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from jotpy.app import create_app
-from jotpy.tickets import day_number, sign_ticket_fields, ticket_for, today_utc
+from jotpy.tickets import PERMANENT_DAY, day_number, sign_ticket_fields, ticket_for, today_utc
 from tests.conftest import setup_owner
 
 NOT_FOUND = "Shared note not found."
@@ -131,7 +131,7 @@ def test_rotate_share_same_access(client, app, data_dir):
     assert first["shareAccess"] == "edit"
     assert second["shareAccess"] == "edit"
     assert first["shareId"] != second["shareId"]
-    assert _meta(data_dir, note_id)["shareGeneration"] == (before + 1) % 256
+    assert _meta(data_dir, note_id)["shareGeneration"] == before + 1
     anon = TestClient(app, follow_redirects=False)
     _assert_missing(anon.get(f"/api/share/{first['shareId']}"))
     assert anon.get(f"/api/share/{second['shareId']}").status_code == 200
@@ -226,3 +226,84 @@ def test_websocket_rechecks_ticket_on_message(client):
             )
             socket.receive_json()
     assert client.get(f"/api/notes/{note_id}").json()["note"]["markdown"] == "hello"
+
+
+def _end_day(token: str) -> int:
+    return int.from_bytes(_decode(token)[:6], "big") & 0xFFF
+
+
+def _ticket(url: str) -> str:
+    return url.rsplit("/s/", 1)[1]
+
+
+def test_permalink_outlives_daily_link(client, app, monkeypatch):
+    setup_owner(client)
+    note_id = client.post("/api/notes").json()["note"]["id"]
+    shared = client.put(f"/api/notes/{note_id}", json={"shareAccess": "edit"}).json()
+    daily = shared["shareId"]
+    permanent = _ticket(shared["sharePermalink"])
+    assert permanent != daily
+    assert _end_day(permanent) == PERMANENT_DAY
+    assert shared["shareExpires"] == (datetime(2026, 1, 1) + timedelta(days=_end_day(daily))).date().isoformat()
+
+    anon = TestClient(app, follow_redirects=False)
+    assert anon.get(f"/api/share/{daily}").json()["linkExpires"] == shared["shareExpires"]
+    assert anon.get(f"/api/share/{permanent}").json()["linkExpires"] is None
+    assert 'data-link-expires="never"' in anon.get(f"/s/{permanent}").text
+    assert f'data-link-expires="{shared["shareExpires"]}"' in anon.get(f"/s/{daily}").text
+
+    # Years later the daily link is gone and the permalink still works.
+    monkeypatch.setattr("jotpy.notes.today_utc", lambda: PERMANENT_DAY - 1)
+    _assert_missing(anon.get(f"/api/share/{daily}"))
+    assert anon.get(f"/api/share/{permanent}").status_code == 200
+    # The shared payload hands out the daily link only, never the permalink.
+    assert shared["sharePermalink"] not in anon.get(f"/api/share/{permanent}").text
+
+    monkeypatch.undo()
+    rotated = client.put(f"/api/notes/{note_id}", json={"shareAccess": "edit", "rotateShare": True}).json()
+    _assert_missing(anon.get(f"/api/share/{permanent}"))
+    assert anon.get(f"/api/share/{_ticket(rotated['sharePermalink'])}").status_code == 200
+
+
+def test_renew_moves_daily_link_without_revoking(client, app, data_dir, monkeypatch):
+    setup_owner(client)
+    note_id = client.post("/api/notes").json()["note"]["id"]
+    monkeypatch.setattr("jotpy.notes.expiry_day", lambda: today_utc())
+    first = client.put(f"/api/notes/{note_id}", json={"shareAccess": "view"}).json()
+    monkeypatch.undo()
+    generation = _meta(data_dir, note_id)["shareGeneration"]
+    renewed = client.put(f"/api/notes/{note_id}", json={"renewLink": True}).json()
+    assert renewed["shareId"] != first["shareId"]
+    assert _end_day(renewed["shareId"]) == _end_day(first["shareId"]) + 1
+    assert _meta(data_dir, note_id)["shareGeneration"] == generation
+    anon = TestClient(app, follow_redirects=False)
+    assert anon.get(f"/api/share/{first['shareId']}").status_code == 200
+    assert anon.get(f"/api/share/{renewed['shareId']}").status_code == 200
+
+    off = client.put(f"/api/notes/{note_id}", json={"shareAccess": "none", "renewLink": True}).json()
+    assert off["shareId"] is None
+    assert off["sharePermalink"] == ""
+    assert off["shareExpires"] is None
+
+
+def test_generation_stops_at_limit(client, app, data_dir):
+    setup_owner(client)
+    note_id = client.post("/api/notes").json()["note"]["id"]
+    shared = client.put(f"/api/notes/{note_id}", json={"shareAccess": "view"}).json()
+    meta = _meta(data_dir, note_id)
+    meta["shareGeneration"] = 254
+    (data_dir / "notes" / f"{note_id}.json").write_text(json.dumps(meta), encoding="utf-8")
+    app.state.runtime.notes[note_id].share_generation = 254
+
+    last = client.put(f"/api/notes/{note_id}", json={"shareAccess": "view", "rotateShare": True})
+    assert last.status_code == 200
+    assert _meta(data_dir, note_id)["shareGeneration"] == 255
+    refused = client.put(f"/api/notes/{note_id}", json={"title": "kept", "shareAccess": "edit"})
+    assert refused.status_code == 409
+    assert _meta(data_dir, note_id)["shareGeneration"] == 255
+    assert _meta(data_dir, note_id)["title"] != "kept"
+    anon = TestClient(app, follow_redirects=False)
+    assert anon.get(f"/api/share/{last.json()['shareId']}").status_code == 200
+    # Turning sharing off still works; turning it back on would need a new generation.
+    assert client.put(f"/api/notes/{note_id}", json={"shareAccess": "none"}).status_code == 200
+    assert client.put(f"/api/notes/{note_id}", json={"shareAccess": "view"}).status_code == 409

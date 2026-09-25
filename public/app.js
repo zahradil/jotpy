@@ -4,6 +4,7 @@
   const page = document.body.dataset.page;
   const noteId = document.body.dataset.noteId || "";
   const shareId = document.body.dataset.shareId || "";
+  const linkExpires = document.body.dataset.linkExpires || "";
 
   if (!app || !page) {
     return;
@@ -429,7 +430,15 @@
 
     const agentButton = document.getElementById("agentButton");
     if (agentButton) {
-      agentButton.addEventListener("click", () => openAgentModal(refs));
+      // The owner hands links to an agent from the share popover; a visitor only has the link they opened.
+      agentButton.addEventListener("click", (e) => {
+        if (page === "editor") {
+          e.stopPropagation();
+          toggleSharePopover(refs);
+        } else {
+          openAgentModal(refs);
+        }
+      });
     }
 
     if (resolvedButton) {
@@ -463,7 +472,8 @@
           shareId: isPublic ? shareId : undefined,
           name: isPublic ? (state.viewer?.commenterName || "Anonymous") : "Owner",
           onReady: (payload) => {
-            const nextShareId = payload.shareId || "";
+            // A visitor keeps the link they opened: a permalink must not turn into the daily link.
+            const nextShareId = isPublic ? shareId : (payload.shareId || "");
             state.note = {
               ...(state.note || {}),
               id: payload.noteId,
@@ -880,7 +890,9 @@
               <button type="button" class="selection-bubble hidden" id="selectionBubble">+ Comment</button>
               <button type="button" class="comment-fab" id="commentFab">+ Comment</button>
               <aside class="thread-rail" id="threadRail"></aside>`;
-    const subtitle = viewOnly ? "" : `<div class="topbar-title-subtle">comments as <span id="commenterLabel">anonymous</span></div>`;
+    const subtitle = viewOnly
+      ? `<div class="topbar-title-subtle">${linkValidity()}</div>`
+      : `<div class="topbar-title-subtle">comments as <span id="commenterLabel">anonymous</span> · ${linkValidity()}</div>`;
     return `
       <div class="app-root">
         <header class="topbar public-page-topbar">
@@ -918,7 +930,7 @@
           <div class="topbar-left">
             <div>
               <div class="topbar-title" id="topbarTitle">note</div>
-              <div class="topbar-title-subtle">editing as <span id="commenterLabel">anonymous</span></div>
+              <div class="topbar-title-subtle">editing as <span id="commenterLabel">anonymous</span> · ${linkValidity()}</div>
             </div>
             <span class="status-text" id="saveStatus"></span>
           </div>
@@ -978,8 +990,6 @@
     if (!popover) return;
     if (!popover.classList.contains("hidden")) { popover.classList.add("hidden"); return; }
     const access = state.note?.shareAccess || "none";
-    let shareUrl = access === "none" ? "" : (state.note?.shareUrl || (state.note?.shareId ? `${location.origin}/s/${state.note.shareId}` : ""));
-    const copyOff = !shareUrl;
     popover.innerHTML = `
       <div class="share-popover-row">
         <select id="shareAccessSelect">
@@ -988,68 +998,95 @@
           <option value="comment" ${access === "comment" ? "selected" : ""}>View & comment</option>
           <option value="edit" ${access === "edit" ? "selected" : ""}>Edit & comment</option>
         </select>
-        <jot-button variant="default" size="sm" id="shareCopyBtn" class="${copyOff ? "share-copy-disabled" : ""}" ${copyOff ? "disabled" : ""}>copy link</jot-button>
+        <jot-button variant="ghost" size="sm" id="shareRotateBtn" title="Issue new links; the current link and permalink stop working">rotate links</jot-button>
       </div>
-      <div class="share-popover-row">
-        <jot-button variant="ghost" size="sm" id="shareRotateBtn" class="${access === "none" ? "share-copy-disabled" : ""}" ${access === "none" ? "disabled" : ""}>new link</jot-button>
+      <div class="share-popover-row share-link-row">
+        <span class="share-link-label" id="shareLinkLabel">link</span>
+        <jot-button variant="default" size="sm" id="shareCopyBtn">copy</jot-button>
+        <jot-button variant="ghost" size="sm" id="shareAgentBtn">for agent</jot-button>
       </div>
+      <div class="share-popover-row share-link-row">
+        <span class="share-link-label">permalink</span>
+        <jot-button variant="default" size="sm" id="sharePermaCopyBtn">copy</jot-button>
+        <jot-button variant="ghost" size="sm" id="sharePermaAgentBtn">for agent</jot-button>
+      </div>
+      <p class="share-error hidden" id="shareError"></p>
     `;
     popover.classList.remove("hidden");
     const select = popover.querySelector("#shareAccessSelect");
-    const copyBtn = popover.querySelector("#shareCopyBtn");
     const rotateBtn = popover.querySelector("#shareRotateBtn");
+    const label = popover.querySelector("#shareLinkLabel");
+    const errorLine = popover.querySelector("#shareError");
+    const links = { url: "", permalink: "" };
+    const copyButtons = [
+      [popover.querySelector("#shareCopyBtn"), "copy", () => links.url],
+      [popover.querySelector("#shareAgentBtn"), "for agent", () => links.url && agentInstructions(links.url)],
+      [popover.querySelector("#sharePermaCopyBtn"), "copy", () => links.permalink],
+      [popover.querySelector("#sharePermaAgentBtn"), "for agent", () => links.permalink && agentInstructions(links.permalink)],
+    ];
+    const setDisabled = (el, off) => {
+      el.disabled = off;
+      el.classList.toggle("share-copy-disabled", off);
+    };
     const applyShare = (saved) => {
       state.note.shareAccess = saved.shareAccess;
       state.note.shareId = saved.shareId || null;
       state.note.shareUrl = saved.shareUrl || "";
-      shareUrl = state.note.shareUrl;
-      const nextCopyOff = !shareUrl;
-      copyBtn.disabled = nextCopyOff;
-      copyBtn.classList.toggle("share-copy-disabled", nextCopyOff);
-      const rotateOff = saved.shareAccess === "none";
-      rotateBtn.disabled = rotateOff;
-      rotateBtn.classList.toggle("share-copy-disabled", rotateOff);
+      links.url = saved.shareUrl || "";
+      links.permalink = saved.sharePermalink || "";
+      label.textContent = saved.shareExpires ? `link · until ${formatDay(saved.shareExpires)}` : "link";
+      setDisabled(rotateBtn, saved.shareAccess === "none");
+      for (const [button, , text] of copyButtons) setDisabled(button, !text());
     };
-    select.addEventListener("change", async () => {
-      if (!state.note) return;
-      const saved = await api(`/api/notes/${state.note.id}`, { method: "PUT", body: { shareAccess: select.value } });
-      applyShare(saved);
+    const put = async (body) => {
+      errorLine.classList.add("hidden");
+      try {
+        applyShare(await api(`/api/notes/${state.note.id}`, { method: "PUT", body }));
+      } catch (error) {
+        errorLine.textContent = error.message;
+        errorLine.classList.remove("hidden");
+      }
+    };
+    applyShare({ shareAccess: access, shareUrl: "", sharePermalink: "" });
+    if (state.note && access !== "none") put({ renewLink: true });
+    select.addEventListener("change", () => {
+      if (state.note) put({ shareAccess: select.value });
     });
-    rotateBtn.addEventListener("click", async () => {
-      if (!state.note || select.value === "none") return;
-      const saved = await api(`/api/notes/${state.note.id}`, {
-        method: "PUT",
-        body: { shareAccess: select.value, rotateShare: true },
+    rotateBtn.addEventListener("click", () => {
+      if (state.note && select.value !== "none") put({ shareAccess: select.value, rotateShare: true });
+    });
+    for (const [button, idle, text] of copyButtons) {
+      button.addEventListener("click", async () => {
+        const value = text();
+        if (!value) return;
+        try { await navigator.clipboard.writeText(value); setButtonLabel(button, "copied!"); setTimeout(() => { setButtonLabel(button, idle); }, 1500); } catch {}
       });
-      applyShare(saved);
-    });
-    copyBtn.addEventListener("click", async () => {
-      if (!shareUrl || select.value === "none") return;
-      try { await navigator.clipboard.writeText(shareUrl); setButtonLabel(copyBtn, "copied!"); setTimeout(() => { setButtonLabel(copyBtn, "copy link"); }, 1500); } catch {}
-    });
-    const closeHandler = (e) => { if (!popover.contains(e.target) && e.target.id !== "shareButton") { popover.classList.add("hidden"); document.removeEventListener("click", closeHandler); } };
+    }
+    const closeHandler = (e) => { if (!popover.contains(e.target) && !e.target.closest("#shareButton, #agentButton")) { popover.classList.add("hidden"); document.removeEventListener("click", closeHandler); } };
     setTimeout(() => document.addEventListener("click", closeHandler), 0);
   }
 
-  function openAgentModal(refs) {
-    const origin = `${location.protocol}//${location.host}`;
-    const skillUrl = `${origin}/skill/jot/SKILL.md`;
-    const isOwnerView = Boolean(state.viewer?.isOwner);
-    const onSharePage = page === "public";
-    const access = state.note?.shareAccess || (onSharePage ? shareAccess : "none");
-    const ticket = onSharePage ? shareId : (state.note?.shareId || "");
-    const lines = [
+  function agentInstructions(link) {
+    return [
       "Stáhni a nainstaluj skill z této adresy:",
-      skillUrl,
+      `${location.protocol}//${location.host}/skill/jot/SKILL.md`,
       "",
-    ];
-    if (isOwnerView && access === "none") {
-      lines.push("Sdílení je vypnuté a odkaz na poznámku ještě není.");
-    } else {
-      lines.push("Pak pracuj s poznámkou:");
-      lines.push(`${origin}/s/${ticket}`);
-    }
-    const instructions = lines.join("\n");
+      "Pak pracuj s poznámkou:",
+      link,
+    ].join("\n");
+  }
+
+  function linkValidity() {
+    if (linkExpires === "never") return "permanent link";
+    return linkExpires ? `link valid until ${formatDay(linkExpires)}` : "";
+  }
+
+  function formatDay(isoDay) {
+    return new Intl.DateTimeFormat("en", { day: "numeric", month: "short", timeZone: "UTC" }).format(new Date(`${isoDay}T00:00:00Z`));
+  }
+
+  function openAgentModal(refs) {
+    const instructions = agentInstructions(`${location.protocol}//${location.host}/s/${shareId}`);
     const hint = "Předej tenhle text agentovi.";
 
     if (!refs.modalBackdrop) return;

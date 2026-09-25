@@ -18,6 +18,10 @@ ACCESS_TO_CODE = {"view": 0, "comment": 1, "edit": 2}
 CODE_TO_ACCESS = {0: "view", 1: "comment", 2: "edit"}
 _B64_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 _NOTE_SPACE = 36**5
+# The highest day number marks a link that never expires.
+PERMANENT_DAY = 4095
+# Generations only climb, so a revoked link cannot come back after a wrap.
+MAX_GENERATION = 255
 
 
 @dataclass(frozen=True)
@@ -46,7 +50,14 @@ def today_utc(now: datetime | None = None) -> int:
 
 def expiry_day(now: datetime | None = None) -> int:
     current = now or datetime.now(timezone.utc)
-    return day_number(_as_utc(current) + timedelta(hours=24))
+    return min(day_number(_as_utc(current) + timedelta(hours=24)), PERMANENT_DAY - 1)
+
+
+def end_day_iso(end_day: int) -> str | None:
+    """Last valid UTC day of a link, or None for a permanent one."""
+    if end_day == PERMANENT_DAY:
+        return None
+    return (EPOCH + timedelta(days=end_day)).date().isoformat()
 
 
 def encode_note_id(note_id: str) -> int:
@@ -118,7 +129,7 @@ def open_ticket(key: bytes, ticket: str, today: int) -> OpenedTicket | None:
     generation = (value >> 12) & 0xFF
     access_code = (value >> 20) & 0x3
     note_bits = value >> 22
-    if access_code == 3 or note_bits >= _NOTE_SPACE or end_day < today:
+    if access_code == 3 or note_bits >= _NOTE_SPACE or (end_day != PERMANENT_DAY and end_day < today):
         return None
     access = CODE_TO_ACCESS.get(access_code)
     if access is None:

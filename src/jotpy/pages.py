@@ -94,6 +94,7 @@ def render_app_shell(page: str, title: str | None, data: dict | None = None) -> 
             f'data-share-id="{escape_html(data["shareId"])}"' if data.get("shareId") else "",
             f'data-share-access="{escape_html(data["shareAccess"])}"' if data.get("shareAccess") else "",
             f'data-sheet-share-id="{escape_html(data["sheetShareId"])}"' if data.get("sheetShareId") else "",
+            f'data-link-expires="{escape_html(data["linkExpires"] or "never")}"' if "linkExpires" in data else "",
             'data-too-large="1"' if data.get("tooLarge") else "",
         )
         if part

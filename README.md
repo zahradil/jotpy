@@ -38,7 +38,7 @@ Vlastník má tyto endpointy:
 | `GET /api/notes?q=` | seznam poznámek, volitelně hledání v titulku a textu |
 | `POST /api/notes` | nová prázdná poznámka |
 | `GET /api/notes/:id` | celá poznámka; s `offset` a `limit` vrátí jen očíslované řádky |
-| `PUT /api/notes/:id` | přepíše `title`, `markdown` nebo `shareAccess`; `rotateShare: true` vydá nový odkaz |
+| `PUT /api/notes/:id` | přepíše `title`, `markdown` nebo `shareAccess`; `rotateShare: true` vydá nový odkaz, `renewLink: true` posune konec denního odkazu |
 | `DELETE /api/notes/:id` | smaže poznámku |
 | `POST /api/notes/:id/edit` | cílené úpravy textu, viz níže |
 
@@ -50,7 +50,12 @@ Komentář je vlákno ukotvené k úryvku textu: `quote` spolu s okolím v `pref
 
 ### Sdílení
 
-Poznámka má úroveň sdílení `none`, `view`, `comment` nebo `edit`. Odkaz `/s/<ticket>` nese id, úroveň, generaci a den konce platnosti a je podepsaný klíčem `data/link.key`. Platí do konce následujícího dne UTC, tedy 24 až 48 hodin. Změna úrovně nebo nový odkaz zvednou generaci a starý odkaz přestane platit. Po vypršení vlastník vydá odkaz nový.
+Poznámka má úroveň sdílení `none`, `view`, `comment` nebo `edit`. Odkaz `/s/<ticket>` nese id, úroveň, generaci a den konce platnosti a je podepsaný klíčem `data/link.key`. Sdílení má dva odkazy se stejnou úrovní:
+
+- denní odkaz (`shareUrl`) platí do konce následujícího dne UTC, tedy 24 až 48 hodin. Poslední den je v `shareExpires`. `renewLink: true` ho posune na zítřek; dialog Share to udělá při každém otevření.
+- permalink (`sharePermalink`) má den 4095 a nevyprší. Patří do konfigurace agenta, který s poznámkou nebo tabulkou pracuje pravidelně, a drží se jako heslo.
+
+Změna úrovně nebo tlačítko „rotate links“ (`rotateShare: true`) zvednou generaci a oba odkazy přestanou platit. Generace se nevrací na nulu: po 255 změnách server další odmítne s `409` a sdílení jde už jen vypnout. Odpovědi pod `/api/share/<ticket>` nesou `linkExpires`, poslední den použitého odkazu, nebo `null` u permalinku. U tabulky v CSV je to hlavička `X-Jot-Link-Expires` s datem nebo `never`. Sdílená stránka platnost ukáže v hlavičce.
 
 Přes odkaz jde totéž API pod `/api/share/<ticket>/…`: čtení, úprava textu (`edit`) a komentáře (`comment` a výš).
 
@@ -80,7 +85,7 @@ Nad 2000 řádků se mřížka v prohlížeči neotevře a tabulku jde číst je
 
 ## Agent
 
-Server vydává skill pro agenta na `/skill/jot/SKILL.md` (zdroj je v `skill-jot/`). Popisuje práci s poznámkou i tabulkou přes sdílený odkaz. Tlačítko „Agent setup“ v editoru i v mřížce dá text pro agenta: adresu skillu a sdílený odkaz.
+Server vydává skill pro agenta na `/skill/jot/SKILL.md` (zdroj je v `skill-jot/`). Popisuje práci s poznámkou i tabulkou přes sdílený odkaz. Dialog Share v editoru i v mřížce má u denního odkazu i u permalinku tlačítko „for agent“, které zkopíruje text pro agenta: adresu skillu a odkaz. Ikonka robota u vlastníka ten dialog otevře. Na sdílené stránce ikonka robota ukáže stejný text s odkazem, přes který návštěvník stránku otevřel.
 
 ## Testy
 

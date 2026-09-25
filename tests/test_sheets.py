@@ -509,11 +509,21 @@ def test_share_ticket_view_edit_and_rotate(client, app, data_dir):
     assert meta["shareAccess"] == "edit"
     assert isinstance(meta["shareExpiresDay"], int)
 
+    permanent = rotated["sharePermalink"].rsplit("/s/", 1)[1]
+    data = anon.get(f"/api/share/{permanent}/data")
+    assert data.status_code == 200
+    assert data.json()["linkExpires"] is None
+    assert anon.get(f"/api/share/{rotated['shareId']}/data").json()["linkExpires"] == rotated["shareExpires"]
+    csv_head = anon.get(f"/api/share/{permanent}/data", params={"format": "csv"}).headers
+    assert csv_head["x-jot-link-expires"] == "never"
+    assert "linkExpires" not in client.get(f"/api/sheets/{sheet_id}/data").json()
+
     off = client.put(f"/api/sheets/{sheet_id}", json={"shareAccess": "none"}).json()
     assert off["shareId"] is None
     assert off["shareUrl"] == ""
     assert anon.get(f"/api/share/{rotated['shareId']}/data").status_code == 404
     assert anon.get(f"/s/{rotated['shareId']}").status_code == 404
+    assert anon.get(f"/api/share/{permanent}/data").status_code == 404
     stored = _meta(data_dir, sheet_id)
     assert stored["shareAccess"] == "none"
     assert stored["shareExpiresDay"] is None
