@@ -77,11 +77,16 @@
           </div>
           <div class="topbar-right">
             ${editButtons}
+            <jot-icon-button icon="preview" label="Open cell (Space)" id="openCell" class="hidden"></jot-icon-button>
             <jot-icon-button icon="robot" label="Agent setup" id="agentButton"></jot-icon-button>
             ${share}
             <button type="button" class="jot-btn-icon jot-btn-icon--md theme-toggle" aria-label="Toggle theme">${themeIcon(document.documentElement.getAttribute("data-theme") || "dark")}</button>
           </div>
         </header>
+        <div class="sheet-cellbar hidden" id="cellBar">
+          <span class="sheet-cellbar-ref" id="cellBarRef"></span>
+          <div class="sheet-cellbar-value" id="cellBarValue"></div>
+        </div>
         <div class="sheet-scroll" id="gridHost" tabindex="0"></div>
         <div class="modal-backdrop hidden" id="modalBackdrop"></div>
       </div>
@@ -102,6 +107,8 @@
     if (addRow) addRow.addEventListener("click", () => sendOps([{ op: "insert_row" }]));
     document.getElementById("deleteRow")?.addEventListener("click", deleteSelectedRow);
     document.getElementById("deleteColumn")?.addEventListener("click", deleteSelectedColumn);
+    document.getElementById("openCell").addEventListener("click", openCellModal);
+    document.getElementById("cellBar").addEventListener("dblclick", openCellModal);
     if (titleInput) {
       titleInput.addEventListener("change", () => saveTitle());
     }
@@ -134,6 +141,88 @@
     const column = columnById(sel.columnId);
     if (!column || !window.confirm(`Delete column ${column.name}?`)) return;
     sendOps([{ op: "delete_column", name: column.name }]);
+  }
+
+  // The bar under the topbar shows the whole value of the selected cell, wrapped.
+  function syncCellBar() {
+    const bar = document.getElementById("cellBar");
+    const open = document.getElementById("openCell");
+    const column = sel ? columnById(sel.columnId) : null;
+    const index = sel ? rowIndex(sel.rowId) : -1;
+    const shown = Boolean(column) && index >= 0;
+    bar?.classList.toggle("hidden", !shown);
+    open?.classList.toggle("hidden", !shown);
+    if (!shown) return;
+    const value = cellValue(sel.rowId, sel.columnId);
+    const ref = document.getElementById("cellBarRef");
+    const text = document.getElementById("cellBarValue");
+    ref.textContent = `${column.name} · ${index + 1}`;
+    ref.title = ref.textContent;
+    text.textContent = value || "(empty)";
+    text.classList.toggle("is-empty", !value);
+    text.scrollTop = 0;
+  }
+
+  // Space or the eye button opens the selected cell in a dialog, to read and, with edit access, to change.
+  function openCellModal() {
+    if (!sel) return;
+    commitEdit();
+    const column = columnById(sel.columnId);
+    const index = rowIndex(sel.rowId);
+    const backdrop = document.getElementById("modalBackdrop");
+    if (!column || index < 0 || !backdrop) return;
+    const { rowId, columnId } = sel;
+    const original = cellValue(rowId, columnId);
+    backdrop.classList.remove("hidden");
+    backdrop.innerHTML = `
+      <div class="modal cell-modal" role="dialog" aria-modal="true">
+        <div class="settings-header">
+          <h2 class="settings-title">${escapeHtml(column.name)} · ${index + 1}</h2>
+          <jot-icon-button icon="close" label="Close" id="cellModalClose"></jot-icon-button>
+        </div>
+        <textarea id="cellModalText" class="cell-modal-text" spellcheck="false"${canEdit ? "" : " readonly"}></textarea>
+        <div class="modal-actions cell-modal-actions">
+          <span class="cell-modal-hint">${canEdit ? "Ctrl+Enter saves · Esc closes" : "Esc closes"}</span>
+          <jot-button variant="ghost" size="sm" id="cellModalCopy">Copy</jot-button>
+          ${canEdit ? `<jot-button variant="primary" size="sm" id="cellModalSave">Save</jot-button>` : ""}
+        </div>
+      </div>
+    `;
+    const text = backdrop.querySelector("#cellModalText");
+    text.value = original;
+    const close = () => {
+      if (canEdit && text.value !== original && !window.confirm("Discard changes?")) return;
+      backdrop.classList.add("hidden");
+      backdrop.innerHTML = "";
+      focusGrid();
+    };
+    const save = () => {
+      const current = columnById(columnId);
+      if (current && text.value !== original) {
+        setLocal(rowId, columnId, text.value);
+        restoreCell(rowId, columnId);
+        sendOps([{ op: "set", row: rowId, column: current.name, value: text.value }]);
+      }
+      backdrop.classList.add("hidden");
+      backdrop.innerHTML = "";
+      focusGrid();
+    };
+    backdrop.onclick = (event) => { if (event.target === backdrop) close(); };
+    backdrop.querySelector("#cellModalClose").addEventListener("click", close);
+    backdrop.querySelector("#cellModalSave")?.addEventListener("click", save);
+    backdrop.querySelector("#cellModalCopy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text.value);
+        backdrop.querySelector("#cellModalCopy button").textContent = "Copied";
+      } catch {}
+    });
+    backdrop.querySelector(".cell-modal").addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); close(); }
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && canEdit) { event.preventDefault(); save(); }
+    });
+    text.focus({ preventScroll: true });
+    text.setSelectionRange(0, 0);
+    text.scrollTop = 0;
   }
 
   // The topbar delete buttons act on the selected cell's row and column.
@@ -218,6 +307,7 @@
         else beginEdit("edit");
         break;
       case "F2": beginEdit("edit"); break;
+      case " ": openCellModal(); break;
       case "Delete":
       case "Backspace": clearSelected(); break;
       default:
@@ -315,6 +405,7 @@
       node.classList.remove("sheet-active", "sheet-head-active");
     }
     syncDeleteButtons();
+    syncCellBar();
     if (!sel) return;
     cellElement(sel.rowId, sel.columnId)?.classList.add("sheet-active");
     gridHost.querySelector(`th[data-column-id="${CSS.escape(sel.columnId)}"]`)?.classList.add("sheet-head-active");
@@ -326,6 +417,11 @@
     const cell = cellElement(sel.rowId, sel.columnId);
     if (!cell) return;
     const original = cellValue(sel.rowId, sel.columnId);
+    // A one-line input would drop the line breaks, so such a cell opens in the dialog.
+    if (initial == null && original.includes("\n")) {
+      openCellModal();
+      return;
+    }
     const value = initial != null ? initial : original;
     edit = { rowId: sel.rowId, columnId: sel.columnId, original, mode, input: null };
     mountEditor(cell, value, value.length, value.length, true);
@@ -385,9 +481,10 @@
     const cell = cellElement(rowId, columnId);
     if (!cell) return;
     rendering = true;
-    cell.textContent = cellValue(rowId, columnId);
+    cell.textContent = oneLine(cellValue(rowId, columnId));
     rendering = false;
     cell.classList.remove("sheet-editing");
+    syncCellBar();
   }
 
   function beginRename(columnId, value, start, end) {
@@ -609,7 +706,7 @@
     const body = state.rows.map((row, index) => {
       const cells = state.columns.map((column) => {
         const value = row.cells && row.cells[column.id] != null ? row.cells[column.id] : "";
-        return `<td class="sheet-cell" data-row-id="${escapeHtml(row.id)}" data-column-id="${escapeHtml(column.id)}">${escapeHtml(value)}</td>`;
+        return `<td class="sheet-cell" data-row-id="${escapeHtml(row.id)}" data-column-id="${escapeHtml(column.id)}">${escapeHtml(oneLine(value))}</td>`;
       }).join("");
       return `<tr data-row="${escapeHtml(row.id)}">
         <th class="sheet-row-head" data-row-head="${escapeHtml(row.id)}">${index + 1}</th>
@@ -688,6 +785,11 @@
   function cellValue(rowId, columnId) {
     const row = state.rows.find((item) => item.id === rowId);
     return row && row.cells && row.cells[columnId] != null ? row.cells[columnId] : "";
+  }
+
+  // The grid keeps every row one line tall; the cell bar and dialog show the real line breaks.
+  function oneLine(value) {
+    return value.replace(/\r?\n/g, " ↵ ");
   }
 
   function setLocal(rowId, columnId, value) {
@@ -992,7 +1094,7 @@
     `;
     const close = () => { backdrop.classList.add("hidden"); backdrop.innerHTML = ""; };
     backdrop.querySelector("#agentModalClose").addEventListener("click", close);
-    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
+    backdrop.onclick = (event) => { if (event.target === backdrop) close(); };
     backdrop.querySelector("#agentCopyBtn").addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(instructions); backdrop.querySelector("#agentCopyBtn").textContent = "copied!"; } catch {}
     });

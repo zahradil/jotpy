@@ -582,6 +582,17 @@ body.sheet-dragging, body.sheet-dragging * { cursor: grabbing !important; user-s
 .sheet-drop { position: absolute; z-index: 5; background: var(--blue); pointer-events: none; }
 .sheet-drop-row { height: 2px; }
 .sheet-drop-column { width: 2px; }
+.sheet-cellbar {
+  display: flex; align-items: flex-start; gap: 0.75rem; flex-shrink: 0;
+  padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--line); background: var(--bg-2); font-size: 0.88rem; line-height: 1.5;
+}
+.sheet-cellbar-ref { flex-shrink: 0; max-width: 14rem; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet-cellbar-value { flex: 1; min-width: 0; min-height: 1.5em; max-height: 4.5em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sheet-cellbar-value.is-empty { color: var(--muted-2); }
+.cell-modal { width: min(760px, calc(100vw - 2rem)); max-height: calc(100vh - 4rem); display: flex; flex-direction: column; }
+.modal textarea.cell-modal-text { flex: 1; min-height: 40vh; max-height: 70vh; line-height: 1.5; white-space: pre-wrap; }
+.cell-modal-actions { margin-top: 0.75rem; justify-content: flex-end; }
+.cell-modal-hint { margin-right: auto; color: var(--muted-2); font-size: 0.8rem; }
 .sheet-too-large { margin: 0; padding: 2.5rem 1.5rem; color: var(--muted); max-width: 40rem; line-height: 1.5; }
 .sheet-version { font-variant-numeric: tabular-nums; }
 #deleteColumn button { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
