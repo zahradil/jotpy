@@ -313,7 +313,7 @@ def register_routes(app: FastAPI) -> None:
         async with runtime.lock:
             if not is_owner_authenticated(runtime, request.headers):
                 return RedirectResponse("/login", status_code=302)
-            return HTMLResponse(render_app_shell("list", "Notes"))
+            return HTMLResponse(render_app_shell("list", None))
 
     @app.get("/notes/{note_id}")
     async def note_page(request: Request, note_id: str):

@@ -131,7 +131,8 @@
       <div class="app-root">
         <header class="topbar">
           <div class="topbar-left">
-            <div class="topbar-title">notes</div>
+            <div class="topbar-title">jotpy</div>
+            <div class="topbar-tagline">notes and tables for people and agents</div>
           </div>
           <div class="topbar-right">
             <jot-button variant="default" size="sm" id="newNoteButton">New note</jot-button>
@@ -824,7 +825,7 @@
       <div class="app-root">
         <header class="topbar">
           <div class="topbar-left">
-            <jot-icon-button icon="back" label="Back to notes" id="notesButton"></jot-icon-button>
+            <jot-icon-button icon="back" label="Back to list" id="notesButton"></jot-icon-button>
             <input id="titleInput" class="title-input" type="text" spellcheck="false" value="untitled" />
             <span class="status-text" id="saveStatus"></span>
           </div>

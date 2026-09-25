@@ -176,6 +176,7 @@ input:focus, textarea:focus { border-color: var(--muted); }
 .auth-shell { display: grid; place-items: center; padding: 2rem; position: relative; }
 .auth-theme-toggle { position: absolute; top: 1rem; right: 1rem; }
 .auth-layout { width: min(420px, 100%); }
+.auth-brand { margin: 0 0 1.2rem; color: var(--muted); font-weight: 600; letter-spacing: 0.01em; }
 .auth-layout h1 { margin: 0 0 0.8rem; font-size: 2rem; font-weight: 700; }
 .auth-hint { margin: 0 0 1.5rem; color: var(--muted); line-height: 1.5; }
 .auth-error { margin: 0 0 1rem; color: var(--danger); }
@@ -204,6 +205,8 @@ input:focus, textarea:focus { border-color: var(--muted); }
 
 .title-input:focus { border: 0; }
 .topbar-title { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
+.topbar-tagline { color: var(--muted); font-size: 0.85rem; }
+@media (max-width: 640px) { .topbar-tagline { display: none; } }
 
 .status-text, .meta-text, .note-row-meta, .thread-meta,
 .empty-state, .toolbar-note, .thread-state, .search-hint { color: var(--muted); }

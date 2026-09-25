@@ -5,6 +5,9 @@ import json
 from jotpy.auth import OWNER_TOKEN_KEY
 from jotpy.markdown_html import escape_html
 
+APP_NAME = "jotpy"
+TAGLINE = "notes and tables for people and agents"
+
 _TOKEN_SCRIPT = f"<script>window.__OWNER_TOKEN_KEY__ = {json.dumps(OWNER_TOKEN_KEY)};</script>"
 _THEME_SCRIPT = (
     "<script>document.querySelectorAll('.theme-toggle').forEach(function(b){"
@@ -13,13 +16,17 @@ _THEME_SCRIPT = (
 )
 
 
+def page_title(title: str) -> str:
+    return f"{title} · {APP_NAME}"
+
+
 def render_simple_page(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{escape_html(title)}</title>
+    <title>{escape_html(page_title(title))}</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/theme.js"></script>
   </head>
@@ -49,13 +56,14 @@ def render_auth_page(mode: str) -> str:
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title}</title>
+    <title>{page_title(title)}</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/theme.js"></script>
   </head>
   <body class="page-shell auth-shell" data-auth-mode="{mode}">
     <button type="button" class="text-button theme-toggle auth-theme-toggle" aria-label="Toggle theme"></button>
     <main class="auth-layout">
+      <p class="auth-brand">{APP_NAME}</p>
       <h1>{heading}</h1>
       <p class="auth-hint">{hint}</p>
       <p class="auth-error hidden" id="auth-error"></p>
@@ -74,7 +82,8 @@ def render_auth_page(mode: str) -> str:
 </html>"""
 
 
-def render_app_shell(page: str, title: str, data: dict | None = None) -> str:
+def render_app_shell(page: str, title: str | None, data: dict | None = None) -> str:
+    """title is the note or sheet name; None for the list page, which carries the app name alone."""
     data = data or {}
     attrs = " ".join(
         part
@@ -104,7 +113,7 @@ def render_app_shell(page: str, title: str, data: dict | None = None) -> str:
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{escape_html(title)}</title>
+    <title>{escape_html(APP_NAME if title is None else page_title(title))}</title>
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/theme.js"></script>
   </head>

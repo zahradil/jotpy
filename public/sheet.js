@@ -10,7 +10,7 @@
   const canEdit = !isPublic || shareAccess === "edit";
   const themeIcon = window.__themeIcon || ((theme) => (theme === "dark" ? "☀" : "☾"));
   const state = {
-    title: document.title || "untitled",
+    title: document.title.replace(/ · jotpy$/, "") || "untitled",
     version: 0,
     columns: [],
     rows: [],
@@ -59,7 +59,7 @@
     const editButtons = canEdit
       ? `<jot-button variant="ghost" size="sm" id="deleteRow" class="hidden">Delete row</jot-button><jot-button variant="ghost" size="sm" id="deleteColumn" class="hidden">Delete column</jot-button><jot-button variant="ghost" size="sm" id="addColumn">Add column</jot-button><jot-button variant="ghost" size="sm" id="addRow">Add row</jot-button>`
       : "";
-    const back = isPublic ? "" : `<jot-icon-button icon="back" label="Back" id="notesButton"></jot-icon-button>`;
+    const back = isPublic ? "" : `<jot-icon-button icon="back" label="Back to list" id="notesButton"></jot-icon-button>`;
     const title = canEdit && !isPublic
       ? `<input id="titleInput" class="title-input" type="text" spellcheck="false" value="${escapeHtml(state.title)}" />`
       : `<div class="topbar-title" id="titleText">${escapeHtml(state.title)}</div>`;
@@ -855,7 +855,7 @@
     if (titleInput && document.activeElement !== titleInput) titleInput.value = state.title;
     const titleText = document.getElementById("titleText");
     if (titleText) titleText.textContent = state.title;
-    document.title = state.title;
+    document.title = `${state.title} · jotpy`;
     // First load selects the top-left cell so the keyboard works right away. Peers are not told.
     const first = !sel && state.rows.length && state.columns.length && document.activeElement === document.body;
     if (first) sel = { rowId: state.rows[0].id, columnId: state.columns[0].id };
@@ -968,7 +968,7 @@
     state.shareAccess = saved.shareAccess;
     state.shareId = saved.shareId || null;
     titleInput.value = state.title;
-    document.title = state.title;
+    document.title = `${state.title} · jotpy`;
     setStatus("Saved");
   }
 
