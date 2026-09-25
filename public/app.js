@@ -476,6 +476,7 @@
               refs.titleInput.value = payload.title;
             }
             if (refs.topbarTitle) refs.topbarTitle.textContent = payload.title || "untitled";
+            setPageTitle(payload.title);
             scheduleRender(refs);
           },
           onTextChange: (text) => {
@@ -509,6 +510,7 @@
           return;
         }
         state.note.title = titleInput.value;
+        setPageTitle(titleInput.value);
         clearTimeout(titleSaveTimer);
         titleSaveTimer = setTimeout(async () => {
           await api(`/api/notes/${noteId}`, {
@@ -733,6 +735,7 @@
         if (refsArg.topbarTitle) {
           refsArg.topbarTitle.textContent = payload.note.title || "untitled";
         }
+        setPageTitle(payload.note.title);
       } else {
         if (state.saveStatus !== "Saving") {
           state.note.markdown = payload.note.markdown;
@@ -748,6 +751,7 @@
           if (refsArg.titleInput && refsArg.titleInput.value !== payload.note.title) {
             refsArg.titleInput.value = payload.note.title;
           }
+          setPageTitle(payload.note.title);
           setPreviewHtml(refsArg, payload.note.renderedHtml || "");
         }
       }
@@ -791,6 +795,7 @@
       if (refsArg.titleInput) {
         refsArg.titleInput.value = payload.note.title || "untitled";
       }
+      setPageTitle(payload.note.title);
       if (refsArg.editorTextarea) {
         refsArg.editorTextarea.value = payload.note.markdown || "";
       }
@@ -948,6 +953,10 @@
         <div class="modal-backdrop hidden" id="modalBackdrop"></div>
       </div>
     `;
+  }
+
+  function setPageTitle(title) {
+    document.title = `${title || "untitled"} · jotpy`;
   }
 
   function setSaveStatus(refs, value) {
