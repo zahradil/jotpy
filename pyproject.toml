@@ -1,0 +1,37 @@
+[project]
+name = "jotpy"
+version = "0.1.0"
+description = "Python server for jot, a self-hosted markdown editor"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Mario Zechner" },
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "markdown-it-py>=3.0",
+    "linkify-it-py>=2.0",
+    "mdit-py-plugins>=0.4",
+    "pygments>=2.18",
+    "nh3>=0.2",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+jot = "jotpy.main:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jotpy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
