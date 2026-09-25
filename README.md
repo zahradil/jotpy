@@ -80,7 +80,7 @@ Nad 2000 řádků se mřížka v prohlížeči neotevře a tabulku jde číst je
 
 ## Agent
 
-Server vydává skill pro agenta na `/skill/jot/SKILL.md` (zdroj je v `skill-jot/`). Popisuje práci s poznámkou přes sdílený odkaz. U tabulky dává návod tlačítko „Agent setup“ v mřížce.
+Server vydává skill pro agenta na `/skill/jot/SKILL.md` (zdroj je v `skill-jot/`). Popisuje práci s poznámkou i tabulkou přes sdílený odkaz. Tlačítko „Agent setup“ v editoru i v mřížce dá text pro agenta: adresu skillu a sdílený odkaz.
 
 ## Testy
 

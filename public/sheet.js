@@ -118,7 +118,7 @@
     if (agentButton) {
       agentButton.addEventListener("click", () => {
         if (!isPublic && (state.shareAccess === "none" || !state.shareId)) return;
-        openAgent();
+        openAgentModal();
       });
     }
     syncAgentButton();
@@ -1028,55 +1028,20 @@
     window.setTimeout(() => document.addEventListener("click", closeHandler), 0);
   }
 
-  function openAgent() {
+  function openAgentModal() {
     const origin = location.origin;
-    let readUrl;
-    let importUrl;
-    let opsUrl;
+    const ticket = isPublic ? shareId : state.shareId;
     const lines = [
-      "Tohle je jedna tabulka pro člověka a agenta. Člověk ji může mezitím měnit v prohlížeči.",
-      "Před zápisem si přečti version. Pošli ji jako X-Jot-Base-Version nebo baseVersion.",
-      "Když odpověď je 409, tabulka se mezitím změnila. Přečti ji znovu a zapiš jen to, co pořád platí. Stejný požadavek neopakuj.",
-      "Buňka je text. 001 zůstane 001. Verze je v odpovědi a v hlavičce X-Jot-Version u CSV.",
+      "Stáhni a nainstaluj skill z této adresy:",
+      `${origin}/skill/jot/SKILL.md`,
       "",
     ];
-    if (isPublic) {
-      lines.push(`Odkaz: ${origin}/s/${shareId}`);
-      readUrl = `${origin}/api/share/${shareId}/data`;
-      importUrl = `${origin}/api/share/${shareId}/import-csv`;
-      opsUrl = `${origin}/api/share/${shareId}/ops`;
-    } else if (!state.shareId) {
-      lines.push("Sdílení je vypnuté. Klíč vlastníka vidí tabulku.");
-      readUrl = `${origin}/api/sheets/${sheetId}/data`;
-      importUrl = `${origin}/api/sheets/${sheetId}/import-csv`;
-      opsUrl = `${origin}/api/sheets/${sheetId}/ops`;
+    if (!ticket) {
+      lines.push("Sdílení je vypnuté a odkaz na tabulku ještě není.");
     } else {
-      lines.push(`Odkaz: ${origin}/s/${state.shareId}`);
-      readUrl = `${origin}/api/share/${state.shareId}/data`;
-      importUrl = `${origin}/api/share/${state.shareId}/import-csv`;
-      opsUrl = `${origin}/api/share/${state.shareId}/ops`;
+      lines.push("Pak pracuj s tabulkou:");
+      lines.push(`${origin}/s/${ticket}`);
     }
-    lines.push(
-      "",
-      "Soubor CSV se nahrává importem. To není editace a jde jen do prázdné tabulky. Když už má sloupec nebo řádek, server to odmítne.",
-      `Nejdřív GET ${readUrl} a vezmi version.`,
-      `POST ${importUrl}`,
-      "Hlavička X-Jot-Base-Version: ta verze. Content-Type: text/csv; charset=utf-8.",
-      "Tělo je celý soubor. První řádek jsou jména sloupců. Sloupec _id se při importu zahodí.",
-      "curl -sS -X POST <import-csv> -H 'Content-Type: text/csv; charset=utf-8' -H 'X-Jot-Base-Version: <verze>' --data-binary @soubor.csv",
-      "",
-      "Úpravy hotové tabulky jsou dávka, ne další import.",
-      `POST ${opsUrl}`,
-      '{"baseVersion": <verze>, "ops": [',
-      '  {"op": "insert_column", "name": "jméno"},',
-      '  {"op": "insert_row", "values": {"jméno": "text"}},',
-      '  {"op": "set", "row": "<id řádku>", "column": "jméno", "value": "text"}',
-      "]}",
-      'Pořadí a šířka: {"op": "move_row", "row": "<id>", "before": "<id řádku>"}, {"op": "move_column", "name": "jméno", "before": "<id sloupce>"}, {"op": "resize_column", "name": "jméno", "width": 200}. Bez before jde na konec.',
-      "id řádku je pole id v JSON a první sloupec _id v CSV. id sloupce pro before je v columnIds.",
-      'Podmínka {"column","value"} musí trefit právě jeden řádek.',
-      "view import ani dávku nepustí.",
-    );
     const instructions = lines.join("\n");
     const backdrop = document.getElementById("modalBackdrop");
     if (!backdrop) return;
