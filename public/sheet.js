@@ -971,7 +971,7 @@
       '  {"op": "set", "row": "<id řádku>", "column": "jméno", "value": "text"}',
       "]}",
       'Pořadí a šířka: {"op": "move_row", "row": "<id>", "before": "<id řádku>"}, {"op": "move_column", "name": "jméno", "before": "<id sloupce>"}, {"op": "resize_column", "name": "jméno", "width": 200}. Bez before jde na konec.',
-      "id řádku je pole id v JSON a první sloupec _id v CSV.",
+      "id řádku je pole id v JSON a první sloupec _id v CSV. id sloupce pro before je v columnIds.",
       'Podmínka {"column","value"} musí trefit právě jeden řádek.',
       "view import ani dávku nepustí.",
     );

@@ -663,9 +663,11 @@ def run_sheet_query(sheet: SheetRecord, query: str | None) -> tuple[dict, str]:
         item["id"] = row_id
         rows_json.append(item)
         records.append((row_id, values))
+    ids = {column.name: column.id for column in sheet.columns}
     payload = {
         "version": sheet.version,
         "columns": selected,
+        "columnIds": {name: ids[name] for name in selected},
         "rows": rows_json,
         "truncated": truncated,
     }

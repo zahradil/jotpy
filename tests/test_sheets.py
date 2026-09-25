@@ -208,6 +208,9 @@ def test_move_and_resize(client, data_dir):
     ])
     assert moved.status_code == 200, moved.text
     assert moved.json()["columns"] == ["c", "b", "a"]
+    assert moved.json()["columnIds"] == {"c": col["c"], "b": col["b"], "a": col["a"]}
+    picked = client.get(f"/api/sheets/{sheet_id}/data", params={"q": "SELECT a, b"}).json()
+    assert picked["columnIds"] == {"a": col["a"], "b": col["b"]}
     assert [item["a"] for item in moved.json()["rows"]] == ["3", "2", "1"]
 
     # Order and width ops do not conflict with an older baseVersion.

@@ -58,7 +58,7 @@ Přes odkaz jde totéž API pod `/api/share/<ticket>/…`: čtení, úprava text
 
 Vedle poznámek leží tabulky v `data/sheets/<id>.json`, s kopií `<id>.csv` pro čtení. Buňka je text. Sdílet se dají pro `view` nebo `edit`, stejnými odkazy jako poznámky. Nová tabulka je rovnou sdílená pro `edit`, aby ji agent mohl hned naplnit.
 
-Čtení je `GET /api/sheets/:id/data`, volitelně s `q` (jedna věta `SELECT`) a `format=csv`. Prázdnou tabulku naplní `POST /api/sheets/:id/import-csv`. Zápis je dávka `POST /api/sheets/:id/ops` s tělem `{"baseVersion": 12, "ops": [...]}`. Stejné operace posílá mřížka v prohlížeči přes WebSocket. Jedna chybná operace shodí celou dávku.
+Čtení je `GET /api/sheets/:id/data`, volitelně s `q` (jedna věta `SELECT`) a `format=csv`. JSON vrací jména vybraných sloupců v `columns`, jejich id v `columnIds` a řádky s polem `id`. Prázdnou tabulku naplní `POST /api/sheets/:id/import-csv`. Zápis je dávka `POST /api/sheets/:id/ops` s tělem `{"baseVersion": 12, "ops": [...]}`. Stejné operace posílá mřížka v prohlížeči přes WebSocket. Jedna chybná operace shodí celou dávku.
 
 | `op` | pole |
 | --- | --- |

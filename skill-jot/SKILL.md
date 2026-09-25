@@ -106,7 +106,7 @@ Tabulka má sloupce se jmény a řádky s id. Buňka je vždy text: `001` zůsta
 curl -sS -G "$ORIGIN/api/share/$SHARE_ID/data" --data-urlencode "q=SELECT jméno, stav WHERE stav = 'open' ORDER BY jméno LIMIT 50"
 ```
 
-Bez `q` přijde celá tabulka. Odpověď má `version`, `columns`, `rows` a `truncated`. Každý řádek má pole `id` a hodnoty podle jmen sloupců. S `format=csv` přijde CSV, první sloupec `_id` a verze v hlavičce `X-Jot-Version`.
+Bez `q` přijde celá tabulka. Odpověď má `version`, `columns` (jména), `columnIds` (jméno → id sloupce), `rows` a `truncated`. Každý řádek má pole `id` a hodnoty podle jmen sloupců. S `format=csv` přijde CSV, první sloupec `_id` a verze v hlavičce `X-Jot-Version`.
 
 `q` je jedna věta: `SELECT` se seznamem sloupců nebo `*`, volitelně `WHERE`, `ORDER BY` (`ASC`, `DESC`) a `LIMIT`. Podmínky znají `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE` (`%` a `_`), `AND`, `OR` a závorky. Hodnota je v apostrofech. Jméno s mezerou dej do uvozovek: `"jednotková cena"`. Jména sloupců rozlišují velká a malá písmena. `_id` se smí filtrovat i řadit. Neznámý sloupec a jiná syntax vrátí `400`.
 
@@ -143,7 +143,7 @@ curl -sS -X POST "$ORIGIN/api/share/$SHARE_ID/ops" \
 | `set` | `row`, `column`, `value` |
 
 - `row` je id řádku, nebo `{"column": "sku", "value": "ABC"}`. Podmínka musí trefit právě jeden řádek.
-- `name` a `column` jsou jména sloupců. Čtení id sloupců nevrací, takže u `insert_column` a `move_column` pole `before` vynech a sloupec půjde na konec.
+- `name` a `column` jsou jména sloupců. `before` u sloupce je id z `columnIds`, u řádku `id` řádku.
 - Operace se provádějí postupně. Když jedna selže, neuloží se nic a odpověď v `op` řekne, která to byla.
 - Odpověď `409` znamená, že se tabulka mezitím změnila. Přečti ji znovu a zapiš jen to, co pořád platí. Stejný požadavek neopakuj.
 - Úpravy sloupců (`insert_column`, `rename_column`, `delete_column`) projdou jen na aktuální verzi.
