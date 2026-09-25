@@ -1,12 +1,12 @@
 [project]
 name = "jotpy"
 version = "0.1.0"
-description = "Python server for jot, a self-hosted markdown editor"
+description = "Notes and sheets shared by people and agents"
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [
-    { name = "Mario Zechner" },
+    { name = "Jiri Zahradil" },
 ]
 dependencies = [
     "fastapi>=0.115",
