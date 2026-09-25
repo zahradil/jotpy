@@ -130,6 +130,8 @@ button.danger { color: var(--danger); }
 
 /* --- jot web components --- */
 jot-icon-button, jot-button { display: inline-flex; }
+jot-icon-button.is-disabled { opacity: 0.35; }
+jot-icon-button.is-disabled button { cursor: default; }
 
 .jot-btn-icon {
   display: inline-flex; align-items: center; justify-content: center;

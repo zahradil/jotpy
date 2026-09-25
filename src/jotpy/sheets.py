@@ -5,7 +5,7 @@ import io
 from dataclasses import dataclass, field
 
 from jotpy.auth import is_owner_authenticated
-from jotpy.notes import allocate_note_id, share_url
+from jotpy.notes import allocate_note_id, share_url, update_share
 from jotpy.sheet_query import ROW_CAP, QueryError, TooManyRows, execute
 from jotpy.tickets import NOTE_ID_RE, open_ticket, ticket_for, today_utc
 from jotpy.util import create_short_id, now_iso, read_json, write_json
@@ -17,6 +17,7 @@ __all__ = [
     "TooManyRows",
     "commit_ops",
     "create_sheet",
+    "import_csv",
     "delete_sheet_files",
     "load_sheets_into_memory",
     "ops_http_body",
@@ -287,6 +288,7 @@ def create_sheet(runtime) -> SheetRecord:
         created_at=timestamp,
         updated_at=timestamp,
     )
+    update_share(sheet, "edit", False)
     runtime.sheets[sheet.id] = sheet
     persist_sheet(runtime, sheet)
     return sheet
@@ -536,6 +538,64 @@ def commit_ops(runtime, sheet: SheetRecord, base_version, ops) -> tuple[SheetRec
     runtime.sheets[sheet.id] = updated
     persist_sheet(runtime, updated)
     return updated, inserted
+
+
+def import_csv(runtime, sheet: SheetRecord, base_version, text: str) -> SheetRecord:
+    if isinstance(base_version, bool) or not isinstance(base_version, int):
+        raise SheetOpError(400, "baseVersion must be an integer.")
+    if sheet.columns or sheet.rows:
+        raise SheetOpError(409, "Import only replaces an empty table.", version=sheet.version)
+    if base_version != sheet.version:
+        raise SheetOpError(409, "conflict", version=sheet.version)
+    names, data = _parse_import_csv(text)
+    working = clone_sheet(sheet)
+    used: set[str] = set()
+    new_version = sheet.version + 1
+    columns = [SheetColumn(_local_id(used), name) for name in names]
+    rows = []
+    for values in data:
+        row = SheetRow(_local_id(used), {})
+        for column, value in zip(columns, values, strict=True):
+            row.cells[column.id] = Cell(value, new_version)
+        rows.append(row)
+    working.columns = columns
+    working.rows = rows
+    working.version = new_version
+    working.updated_at = now_iso()
+    runtime.sheets[sheet.id] = working
+    persist_sheet(runtime, working)
+    return working
+
+
+def _parse_import_csv(text: str) -> tuple[list[str], list[list[str]]]:
+    try:
+        parsed = list(csv.reader(io.StringIO(text, newline="")))
+    except csv.Error:
+        raise SheetOpError(400, "Invalid CSV.") from None
+    if not parsed or not any(name != "" for name in parsed[0]):
+        raise SheetOpError(400, "CSV header is required.")
+    header = parsed[0]
+    names: list[str] = []
+    keep: list[int] = []
+    for index, name in enumerate(header):
+        if name == "_id":
+            continue
+        if name == "":
+            raise SheetOpError(400, "Column name is required.")
+        if name in names:
+            raise SheetOpError(400, "Column already exists.")
+        names.append(name)
+        keep.append(index)
+    if not names:
+        raise SheetOpError(400, "CSV header is required.")
+    data: list[list[str]] = []
+    for row in parsed[1:]:
+        if len(row) > len(header):
+            raise SheetOpError(400, "Row has more columns than the header.")
+        data.append([row[index] if index < len(row) else "" for index in keep])
+    if len(data) > ROW_CAP:
+        raise SheetOpError(400, "Import exceeds 2000 rows.")
+    return names, data
 
 
 def _row_records(sheet: SheetRecord) -> tuple[list[str], list[str], list[dict[str, str]]]:

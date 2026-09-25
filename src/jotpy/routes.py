@@ -64,6 +64,7 @@ from jotpy.sheets import (
     TooManyRows,
     commit_ops,
     create_sheet,
+    import_csv,
     delete_sheet_files,
     ops_http_body,
     persist_sheet,
@@ -192,6 +193,50 @@ async def _sheet_ops_response(runtime, sheet, body: dict):
         return _sheet_op_error(exc)
     await broadcast_sheet(runtime, updated)
     return _ok(ops_http_body(updated, inserted))
+
+
+async def _read_import_csv(request: Request):
+    raw = await request.body()
+    media = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if media in ("text/csv", "application/csv"):
+        version = request.headers.get("x-jot-base-version")
+        if version is None or not _integer_text(version):
+            return None, None, _error(400, "baseVersion must be an integer.")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return None, None, _error(400, "CSV must be UTF-8.")
+        return int(version), text, None
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, None, _error(400, "Expected CSV or JSON {baseVersion, csv}.")
+    if not isinstance(body, dict):
+        return None, None, _error(400, "Expected CSV or JSON {baseVersion, csv}.")
+    base_version = body.get("baseVersion")
+    text = body.get("csv")
+    if isinstance(base_version, bool) or not isinstance(base_version, int):
+        return None, None, _error(400, "baseVersion must be an integer.")
+    if not isinstance(text, str):
+        return None, None, _error(400, "csv must be a string.")
+    return base_version, text, None
+
+
+def _integer_text(value: str) -> bool:
+    if value in ("", "+", "-"):
+        return False
+    body = value[1:] if value[0] in "+-" else value
+    return body.isdigit()
+
+
+async def _sheet_import_response(runtime, sheet, base_version, text: str):
+    try:
+        updated = import_csv(runtime, sheet, base_version, text)
+    except SheetOpError as exc:
+        return _sheet_op_error(exc)
+    await broadcast_sheet(runtime, updated)
+    payload, _csv = run_sheet_query(updated, None)
+    return _ok(payload)
 
 
 def _skill_markdown_path() -> Path:
@@ -990,7 +1035,10 @@ def register_routes(app: FastAPI) -> None:
             sheet = runtime.sheets.get(sheet_id)
             if sheet is None:
                 return _page_missing("Not found", "<p>Sheet not found.</p><p><a href=\"/\">Back</a></p>")
-            data = {"sheetId": sheet.id}
+            data = {"sheetId": sheet.id, "shareAccess": sheet.share_access}
+            ticket = sheet_ticket(runtime, sheet)
+            if ticket:
+                data["sheetShareId"] = ticket
             if len(sheet.rows) > ROW_CAP:
                 data["tooLarge"] = "1"
             return HTMLResponse(render_app_shell("sheet", sheet.title, data))
@@ -1105,6 +1153,21 @@ def register_routes(app: FastAPI) -> None:
                 return missing
             return await _sheet_ops_response(runtime, sheet, body)
 
+    @app.post("/api/sheets/{sheet_id}/import-csv")
+    async def sheets_import_csv(request: Request, sheet_id: str):
+        runtime = request.app.state.runtime
+        base_version, text, rejected = await _read_import_csv(request)
+        if rejected is not None:
+            return rejected
+        async with runtime.lock:
+            denied = _owner(runtime, request)
+            if denied:
+                return denied
+            sheet, missing = _sheet_or_error(runtime, sheet_id)
+            if missing:
+                return missing
+            return await _sheet_import_response(runtime, sheet, base_version, text)
+
     @app.get("/api/share/{share_id}/data")
     async def share_sheet_data(request: Request, share_id: str):
         runtime = request.app.state.runtime
@@ -1123,6 +1186,18 @@ def register_routes(app: FastAPI) -> None:
             if sheet is None:
                 return _error(404, "Shared sheet not found.")
             return await _sheet_ops_response(runtime, sheet, body)
+
+    @app.post("/api/share/{share_id}/import-csv")
+    async def share_sheet_import_csv(request: Request, share_id: str):
+        runtime = request.app.state.runtime
+        base_version, text, rejected = await _read_import_csv(request)
+        if rejected is not None:
+            return rejected
+        async with runtime.lock:
+            sheet = require_sheet(runtime, request, share_id, "edit")
+            if sheet is None:
+                return _error(404, "Shared sheet not found.")
+            return await _sheet_import_response(runtime, sheet, base_version, text)
 
     @app.websocket("/")
     async def ws_route(websocket: WebSocket):

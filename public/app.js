@@ -134,8 +134,8 @@
             <div class="topbar-title">notes</div>
           </div>
           <div class="topbar-right">
-            <jot-icon-button icon="plus" label="New note" id="newNoteButton"></jot-icon-button>
-            <jot-icon-button icon="table" label="New table" id="newSheetButton"></jot-icon-button>
+            <jot-button variant="default" size="sm" id="newNoteButton">New note</jot-button>
+            <jot-button variant="default" size="sm" id="newSheetButton">New table</jot-button>
             <jot-icon-button icon="settings" label="Settings" id="settingsButton"></jot-icon-button>
             <jot-icon-button icon="logout" label="Logout" id="logoutButton"></jot-icon-button>
             <button type="button" class="jot-btn-icon jot-btn-icon--md theme-toggle" aria-label="Toggle theme">${themeIcon(document.documentElement.getAttribute("data-theme") || "dark")}</button>

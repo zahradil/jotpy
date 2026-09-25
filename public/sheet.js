@@ -14,8 +14,8 @@
     version: 0,
     columns: [],
     rows: [],
-    shareAccess: isPublic ? shareAccess : "none",
-    shareId: isPublic ? shareId : null,
+    shareAccess: shareAccess || "none",
+    shareId: isPublic ? (shareId || null) : (document.body.dataset.sheetShareId || null),
     clientId: "",
     peers: new Map(),
   };
@@ -88,7 +88,13 @@
     const shareButton = document.getElementById("shareButton");
     if (shareButton) shareButton.addEventListener("click", (event) => { event.stopPropagation(); toggleShare(); });
     const agentButton = document.getElementById("agentButton");
-    if (agentButton) agentButton.addEventListener("click", openAgent);
+    if (agentButton) {
+      agentButton.addEventListener("click", () => {
+        if (!isPublic && (state.shareAccess === "none" || !state.shareId)) return;
+        openAgent();
+      });
+    }
+    syncAgentButton();
     document.getElementById("gridHost").addEventListener("click", onGridClick);
     document.getElementById("gridHost").addEventListener("dblclick", onGridDblClick);
   }
@@ -249,6 +255,7 @@
     if (message.title) state.title = message.title;
     if ("shareAccess" in message && message.shareAccess) state.shareAccess = message.shareAccess;
     if ("shareId" in message) state.shareId = message.shareId || null;
+    syncAgentButton();
     state.columns = message.columns || [];
     state.rows = message.rows || [];
     if (titleInput && document.activeElement !== titleInput) titleInput.value = state.title;
@@ -263,7 +270,7 @@
     const gen = ++socketGen;
     sawHello = false;
     ready = new Promise((resolve) => { readyResolve = resolve; });
-    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const query = isPublic ? `shareId=${encodeURIComponent(shareId)}` : `sheetId=${encodeURIComponent(sheetId)}`;
     const socket = new WebSocket(`${protocol}//${location.host}/?${query}`);
     ws = socket;
@@ -390,6 +397,7 @@
       const next = saved.shareUrl || (state.shareId ? `${location.origin}/s/${state.shareId}` : "");
       copyBtn.disabled = !next;
       rotateBtn.disabled = saved.shareAccess === "none";
+      syncAgentButton();
       copyBtn.onclick = async () => {
         if (!next) return;
         try { await navigator.clipboard.writeText(next); copyBtn.textContent = "copied!"; } catch {}
@@ -418,24 +426,52 @@
 
   function openAgent() {
     const origin = location.origin;
-    const lines = ["Tabulka drží text. Verze je v odpovědi a v hlavičce X-Jot-Version u CSV.", ""];
+    let readUrl;
+    let importUrl;
+    let opsUrl;
+    const lines = [
+      "Tohle je jedna tabulka pro člověka a agenta. Člověk ji může mezitím měnit v prohlížeči.",
+      "Před zápisem si přečti version. Pošli ji jako X-Jot-Base-Version nebo baseVersion.",
+      "Když odpověď je 409, tabulka se mezitím změnila. Přečti ji znovu a zapiš jen to, co pořád platí. Stejný požadavek neopakuj.",
+      "Buňka je text. 001 zůstane 001. Verze je v odpovědi a v hlavičce X-Jot-Version u CSV.",
+      "",
+    ];
     if (isPublic) {
       lines.push(`Odkaz: ${origin}/s/${shareId}`);
-      lines.push(`Čtení: GET ${origin}/api/share/${shareId}/data?q=SELECT%20*`);
-      lines.push(`Zápis (jen edit): POST ${origin}/api/share/${shareId}/ops`);
+      readUrl = `${origin}/api/share/${shareId}/data`;
+      importUrl = `${origin}/api/share/${shareId}/import-csv`;
+      opsUrl = `${origin}/api/share/${shareId}/ops`;
     } else if (!state.shareId) {
-      lines.push("Sdílení je vypnuté. Klíč vlastníka vidí tabulku:");
-      lines.push(`GET ${origin}/api/sheets/${sheetId}/data?q=SELECT%20*`);
-      lines.push(`POST ${origin}/api/sheets/${sheetId}/ops`);
+      lines.push("Sdílení je vypnuté. Klíč vlastníka vidí tabulku.");
+      readUrl = `${origin}/api/sheets/${sheetId}/data`;
+      importUrl = `${origin}/api/sheets/${sheetId}/import-csv`;
+      opsUrl = `${origin}/api/sheets/${sheetId}/ops`;
     } else {
       lines.push(`Odkaz: ${origin}/s/${state.shareId}`);
-      lines.push(`GET ${origin}/api/share/${state.shareId}/data?q=SELECT%20*`);
-      lines.push(`POST ${origin}/api/share/${state.shareId}/ops`);
+      readUrl = `${origin}/api/share/${state.shareId}/data`;
+      importUrl = `${origin}/api/share/${state.shareId}/import-csv`;
+      opsUrl = `${origin}/api/share/${state.shareId}/ops`;
     }
-    lines.push("");
-    lines.push('{"baseVersion": 0, "ops": [{"op": "set", "row": "<id řádku>", "column": "jméno", "value": "text"}]}');
-    lines.push("id řádku je pole id v JSON a první sloupec _id v CSV. Buňka je text, 001 zůstane 001.");
-    lines.push("Podmínka {\"column\",\"value\"} musí trefit právě jeden řádek. view dávku nepustí.");
+    lines.push(
+      "",
+      "Soubor CSV se nahrává importem. To není editace a jde jen do prázdné tabulky. Když už má sloupec nebo řádek, server to odmítne.",
+      `Nejdřív GET ${readUrl} a vezmi version.`,
+      `POST ${importUrl}`,
+      "Hlavička X-Jot-Base-Version: ta verze. Content-Type: text/csv; charset=utf-8.",
+      "Tělo je celý soubor. První řádek jsou jména sloupců. Sloupec _id se při importu zahodí.",
+      "curl -sS -X POST <import-csv> -H 'Content-Type: text/csv; charset=utf-8' -H 'X-Jot-Base-Version: <verze>' --data-binary @soubor.csv",
+      "",
+      "Úpravy hotové tabulky jsou dávka, ne další import.",
+      `POST ${opsUrl}`,
+      '{"baseVersion": <verze>, "ops": [',
+      '  {"op": "insert_column", "name": "jméno"},',
+      '  {"op": "insert_row", "values": {"jméno": "text"}},',
+      '  {"op": "set", "row": "<id řádku>", "column": "jméno", "value": "text"}',
+      "]}",
+      "id řádku je pole id v JSON a první sloupec _id v CSV.",
+      'Podmínka {"column","value"} musí trefit právě jeden řádek.',
+      "view import ani dávku nepustí.",
+    );
     const instructions = lines.join("\n");
     const backdrop = document.getElementById("modalBackdrop");
     if (!backdrop) return;
@@ -457,6 +493,15 @@
     backdrop.querySelector("#agentCopyBtn").addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(instructions); backdrop.querySelector("#agentCopyBtn").textContent = "copied!"; } catch {}
     });
+  }
+
+  function syncAgentButton() {
+    const button = document.getElementById("agentButton");
+    if (!button || isPublic) return;
+    const off = state.shareAccess === "none" || !state.shareId;
+    button.classList.toggle("is-disabled", off);
+    const inner = button.querySelector("button");
+    if (inner) inner.disabled = off;
   }
 
   function setStatus(value) {

@@ -31,7 +31,7 @@ def test_empty_sheet(client, app, data_dir):
     sheet_id = sheet["id"]
     assert ID_RE.fullmatch(sheet_id)
     assert sheet["title"] == "untitled"
-    assert sheet["shareId"] is None
+    assert isinstance(sheet["shareId"], str) and sheet["shareId"]
     assert sheet["columnCount"] == 0
     assert sheet["rowCount"] == 0
 
@@ -47,9 +47,9 @@ def test_empty_sheet(client, app, data_dir):
     assert raw.endswith("\n")
     assert "shareId" not in raw
     meta = json.loads(raw)
-    assert meta["shareGeneration"] == 0
-    assert meta["shareAccess"] == "none"
-    assert meta["shareExpiresDay"] is None
+    assert meta["shareGeneration"] == 1
+    assert meta["shareAccess"] == "edit"
+    assert isinstance(meta["shareExpiresDay"], int)
     assert meta["columns"] == []
     assert meta["rows"] == []
     assert (data_dir / "sheets" / f"{sheet_id}.csv").read_text(encoding="utf-8") == "_id\n"
@@ -412,8 +412,8 @@ def test_share_ticket_view_edit_and_rotate(client, app, data_dir):
     anon = TestClient(app, follow_redirects=False)
 
     ignored = client.put(f"/api/sheets/{sheet_id}", json={"shareAccess": "comment"}).json()
-    assert ignored["shareAccess"] == "none"
-    assert ignored["shareId"] is None
+    assert ignored["shareAccess"] == "edit"
+    assert ignored["shareId"]
 
     view = client.put(f"/api/sheets/{sheet_id}", json={"shareAccess": "view"}).json()
     view_ticket = view["shareId"]
@@ -472,6 +472,85 @@ def test_share_ticket_view_edit_and_rotate(client, app, data_dir):
     stored = _meta(data_dir, sheet_id)
     assert stored["shareAccess"] == "none"
     assert stored["shareExpiresDay"] is None
+
+
+def test_import_csv_fills_empty_table_only(client, app):
+    setup_owner(client)
+    sheet_id = client.post("/api/sheets").json()["sheet"]["id"]
+    csv_text = 'sku,cena\n001,"1,5"\nABC,10\n'
+    imported = client.post(
+        f"/api/sheets/{sheet_id}/import-csv",
+        content=csv_text.encode(),
+        headers={"Content-Type": "text/csv; charset=utf-8", "X-Jot-Base-Version": "0"},
+    )
+    assert imported.status_code == 200, imported.text
+    body = imported.json()
+    assert body["version"] == 1
+    assert body["columns"] == ["sku", "cena"]
+    assert body["rows"][0]["sku"] == "001"
+    assert body["rows"][0]["cena"] == "1,5"
+    assert ID_RE.fullmatch(body["rows"][0]["id"])
+    again = client.post(
+        f"/api/sheets/{sheet_id}/import-csv",
+        content=csv_text.encode(),
+        headers={"Content-Type": "text/csv", "X-Jot-Base-Version": "1"},
+    )
+    assert again.status_code == 409
+    assert again.json()["error"] == "Import only replaces an empty table."
+    stale = client.post("/api/sheets").json()["sheet"]["id"]
+    wrong = client.post(
+        f"/api/sheets/{stale}/import-csv",
+        content=b"sku\nA\n",
+        headers={"Content-Type": "text/csv", "X-Jot-Base-Version": "4"},
+    )
+    assert wrong.status_code == 409
+    assert wrong.json()["version"] == 0
+
+    fresh = client.post("/api/sheets").json()["sheet"]["id"]
+    exported = "_id,sku\nold,001\n"
+    kept = client.post(
+        f"/api/sheets/{fresh}/import-csv",
+        content=exported.encode(),
+        headers={"Content-Type": "text/csv", "X-Jot-Base-Version": "0"},
+    )
+    assert kept.status_code == 200
+    assert kept.json()["columns"] == ["sku"]
+    assert kept.json()["rows"][0]["sku"] == "001"
+    assert kept.json()["rows"][0]["id"] != "old"
+
+    wide = client.post(
+        f"/api/sheets/{fresh}/import-csv",
+        content=b"a\n1,2\n",
+        headers={"Content-Type": "text/csv", "X-Jot-Base-Version": "0"},
+    )
+    assert wide.status_code == 409
+
+    empty = client.post("/api/sheets").json()["sheet"]["id"]
+    ragged = client.post(
+        f"/api/sheets/{empty}/import-csv",
+        content=b"a\n1,2\n",
+        headers={"Content-Type": "text/csv", "X-Jot-Base-Version": "0"},
+    )
+    assert ragged.status_code == 400
+    assert ragged.json()["error"] == "Row has more columns than the header."
+
+    shared = client.post("/api/sheets").json()["sheet"]["id"]
+    view = client.put(f"/api/sheets/{shared}", json={"shareAccess": "view"}).json()["shareId"]
+    edit = client.put(f"/api/sheets/{shared}", json={"shareAccess": "edit"}).json()["shareId"]
+    anon = TestClient(app, follow_redirects=False)
+    denied = anon.post(
+        f"/api/share/{view}/import-csv",
+        content=b"sku\nA\n",
+        headers={"Content-Type": "text/csv", "X-Jot-Base-Version": "0"},
+    )
+    assert denied.status_code == 404
+    allowed = anon.post(
+        f"/api/share/{edit}/import-csv",
+        content="jméno\n001\n".encode(),
+        headers={"Content-Type": "text/csv; charset=utf-8", "X-Jot-Base-Version": "0"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["rows"][0]["jméno"] == "001"
 
 
 def test_websocket_grid_and_view_ticket(client, app):
