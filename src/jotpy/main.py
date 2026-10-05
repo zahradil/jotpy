@@ -19,6 +19,7 @@ def cli_arg(name: str) -> str | None:
 
 
 def main() -> None:
+    host = cli_arg("host") or os.environ.get("HOST") or "0.0.0.0"
     port_text = cli_arg("port") or os.environ.get("PORT") or "3210"
     data_text = cli_arg("data") or os.environ.get("DATA_DIR") or str(Path.cwd() / "data")
     port = int(port_text)
@@ -29,12 +30,12 @@ def main() -> None:
     class _Server(uvicorn.Server):
         async def startup(self, sockets=None):
             await super().startup(sockets=sockets)
-            print(f"jot listening on http://localhost:{port}", flush=True)
+            print(f"jot listening on http://{host}:{port}", flush=True)
             print(f"data: {resolved}", flush=True)
 
     config = uvicorn.Config(
         app,
-        host="0.0.0.0",
+        host=host,
         port=port,
         ws_ping_interval=30.0,
         ws_ping_timeout=30.0,

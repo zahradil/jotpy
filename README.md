@@ -17,7 +17,7 @@ uv run jot
 uv run jot --port=3210 --data=./data
 ```
 
-Port bere `--port=` nebo proměnnou `PORT`, výchozí je 3210. Adresář dat bere `--data=` nebo `DATA_DIR`, výchozí je `./data` vůči aktuálnímu adresáři.
+Port bere `--port=` nebo proměnnou `PORT`, výchozí je 3210. Adresu bere `--host=` nebo `HOST`, výchozí je `0.0.0.0`; za reverse proxy stačí `--host=127.0.0.1`. Adresář dat bere `--data=` nebo `DATA_DIR`, výchozí je `./data` vůči aktuálnímu adresáři.
 
 ## Přístup
 
