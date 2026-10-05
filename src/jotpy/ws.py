@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import urllib.parse
 from dataclasses import dataclass
 
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from jotpy.auth import get_commenter_identity, is_owner_authenticated
+from jotpy.auth import get_commenter_identity, is_owner_authenticated, request_host
 from jotpy.collab import apply_client_mutations, save_collab_state
 from jotpy.notes import note_ticket, persist_note, resolve_share
 from jotpy.sheets import SheetOpError, commit_ops, resolve_sheet_share, sheet_ops_result, sheet_ws_payload
@@ -374,8 +375,19 @@ async def _attach(runtime, ws: WebSocket, conn: ClientConn, hello: bool) -> None
         await _send_existing_presence(runtime, conn)
 
 
+def same_origin(websocket: WebSocket) -> bool:
+    """Browsers always send Origin; a page on another site must not reuse the owner's cookie."""
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True
+    return urllib.parse.urlsplit(origin).netloc.lower() == request_host(websocket).lower()
+
+
 async def websocket_endpoint(websocket: WebSocket) -> None:
     runtime = websocket.app.state.runtime
+    if not same_origin(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     note_id = websocket.query_params.get("noteId") or ""
     sheet_id = websocket.query_params.get("sheetId") or ""

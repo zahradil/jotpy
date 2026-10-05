@@ -1,3 +1,6 @@
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
 from tests.conftest import setup_owner
 
 
@@ -64,3 +67,16 @@ def test_closed_editor_drops_its_cursor(client, app):
         assert hello["type"] == "hello"
         assert hello["clientId"] == "c2"
         assert len(app.state.runtime.clients) == 1
+
+
+def test_websocket_rejects_another_origin(client):
+    setup_owner(client)
+    note_id = client.post("/api/notes").json()["note"]["id"]
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(f"/?noteId={note_id}", headers={"origin": "https://evil.example"}):
+            pass
+    assert closed.value.code == 1008
+
+    with client.websocket_connect(f"/?noteId={note_id}", headers={"origin": "http://testserver"}) as socket:
+        assert socket.receive_json()["type"] == "hello"
