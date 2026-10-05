@@ -1068,10 +1068,10 @@
 
   function agentInstructions(link) {
     return [
-      "Stáhni a nainstaluj skill z této adresy:",
+      "Download and install the skill from this address:",
       `${location.protocol}//${location.host}/skill/jot/SKILL.md`,
       "",
-      "Pak pracuj s poznámkou:",
+      "Then work on this note:",
       link,
     ].join("\n");
   }
@@ -1087,7 +1087,7 @@
 
   function openAgentModal(refs) {
     const instructions = agentInstructions(`${location.protocol}//${location.host}/s/${shareId}`);
-    const hint = "Předej tenhle text agentovi.";
+    const hint = "Give this text to the agent.";
 
     if (!refs.modalBackdrop) return;
     state.modalOpen = true;

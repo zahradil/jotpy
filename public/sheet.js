@@ -1064,10 +1064,10 @@
 
   function agentInstructions(link) {
     return [
-      "Stáhni a nainstaluj skill z této adresy:",
+      "Download and install the skill from this address:",
       `${location.origin}/skill/jot/SKILL.md`,
       "",
-      "Pak pracuj s tabulkou:",
+      "Then work on this table:",
       link,
     ].join("\n");
   }
@@ -1087,7 +1087,7 @@
           <h2 class="settings-title">Agent setup</h2>
           <jot-icon-button icon="close" label="Close" id="agentModalClose"></jot-icon-button>
         </div>
-        <p class="agent-hint">Předej tenhle text agentovi.</p>
+        <p class="agent-hint">Give this text to the agent.</p>
         <pre class="agent-instructions"><code>${escapeHtml(instructions)}</code></pre>
         <button type="button" id="agentCopyBtn">copy to clipboard</button>
       </div>
