@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 
 from jotpy.auth import OWNER_TOKEN_KEY
@@ -13,6 +15,38 @@ _THEME_SCRIPT = (
     "<script>document.querySelectorAll('.theme-toggle').forEach(function(b){"
     "b.innerHTML=window.__themeIcon(document.documentElement.getAttribute('data-theme')||'dark')"
     "});</script>"
+)
+
+
+_MERMAID_SCRIPT = """<script type="module">
+      import mermaid from "/static/mermaid/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: false, theme: document.documentElement.getAttribute("data-theme") === "light" ? "default" : "dark" });
+      window.__mermaid = mermaid;
+      if (window.__renderMermaid) { var c = document.getElementById("previewContent"); if (c) window.__renderMermaid(c); }
+    </script>"""
+
+
+def _script_hash(tag: str) -> str:
+    body = tag[tag.index(">") + 1 : tag.rindex("</script>")]
+    return "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode("ascii") + "'"
+
+
+# The pages carry only these inline scripts, so the policy allows them by hash and nothing else inline.
+# Styles stay open inline: the editor, the grid and mermaid's SVG set style attributes.
+# Images may come from anywhere, as markdown links them.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self' " + " ".join(_script_hash(tag) for tag in (_TOKEN_SCRIPT, _THEME_SCRIPT, _MERMAID_SCRIPT)),
+        "style-src 'self' 'unsafe-inline'",
+        "img-src * data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    )
 )
 
 
@@ -100,15 +134,7 @@ def render_app_shell(page: str, title: str | None, data: dict | None = None) -> 
         if part
     )
     script = "/static/sheet.js" if page == "sheet" else "/static/app.js"
-    mermaid = ""
-    if page not in ("list", "sheet"):
-        mermaid = """
-    <script type="module">
-      import mermaid from "/static/mermaid/mermaid.esm.min.mjs";
-      mermaid.initialize({ startOnLoad: false, theme: document.documentElement.getAttribute("data-theme") === "light" ? "default" : "dark" });
-      window.__mermaid = mermaid;
-      if (window.__renderMermaid) { var c = document.getElementById("previewContent"); if (c) window.__renderMermaid(c); }
-    </script>"""
+    mermaid = f"\n    {_MERMAID_SCRIPT}" if page not in ("list", "sheet") else ""
     return f"""<!doctype html>
 <html lang="en">
   <head>

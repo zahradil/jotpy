@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from jotpy.pages import CONTENT_SECURITY_POLICY
 from jotpy.routes import register_error_handlers, register_routes
 from jotpy.runtime import Runtime
 
@@ -28,5 +29,16 @@ def create_app(data_dir: str | Path) -> FastAPI:
     app.mount("/static/mermaid", StaticFiles(directory=str(root / "vendor" / "mermaid")), name="mermaid")
     app.mount("/static", StaticFiles(directory=str(root / "public")), name="static")
     register_routes(app)
+
+    @app.middleware("http")
+    async def security_headers(request, call_next):
+        response = await call_next(request)
+        headers = response.headers
+        headers.setdefault("content-security-policy", CONTENT_SECURITY_POLICY)
+        headers.setdefault("x-content-type-options", "nosniff")
+        # Share links carry their ticket in the path; a click out of a shared note must not leak it.
+        headers.setdefault("referrer-policy", "no-referrer")
+        return response
+
     register_error_handlers(app)
     return app
