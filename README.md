@@ -1,94 +1,141 @@
 # jotpy
 
-Server pro poznámky a tabulky, na kterých pracuje člověk v prohlížeči a agent přes HTTP API zároveň. Obojí se dá sdílet odkazem, u poznámek s komentáři.
+A small self-hosted server for notes and tables that a person edits in the browser while an agent works on them over HTTP. Both can be shared by link, and notes take comments.
 
-Prohlížeč v `public/` vychází z projektu [jot](https://github.com/mariozechner/jot) (MIT, Mario Zechner / `@mariozechner/jot`). Pořadí znaků v editoru drží jednoduchá verze knihovny [articulated](https://github.com/mweidner037/articulated) (MIT, Matthew Weidner): pole a splice se stejným `save()` jako `IdList` 1.3.1, ne její strom.
+![A note: markdown source on the left, rendered preview with a mermaid diagram and a commented passage on the right](docs/note.png)
 
-## Instalace
+![A table in the grid editor](docs/sheet.png)
+
+## Relation to jot
+
+jotpy started as a Python port of [jot](https://github.com/badlogic/jot) by Mario Zechner, and the browser client in `public/` still comes from it. On top of jot it adds tables with a small `SELECT` query language and CSV import and export, and share links that are signed, expire daily (or never, as a permalink) and can be revoked by rotating them. Agents get a skill served by the instance instead of jot's CLI. There is no CLI and no Docker setup.
+
+The order of characters in the collaborative editor is kept by a simplified version of [articulated](https://github.com/mweidner037/articulated) by Matthew Weidner: a plain array with splice and the same `save()` format as `IdList` 1.3.1, not its tree.
+
+## Install
+
+Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
 ```
 
-## Spuštění
+## Run
 
 ```bash
 uv run jot
-uv run jot --port=3210 --data=./data
+uv run jot --host=127.0.0.1 --port=3210 --data=./data
 ```
 
-Port bere `--port=` nebo proměnnou `PORT`, výchozí je 3210. Adresu bere `--host=` nebo `HOST`, výchozí je `0.0.0.0`; za reverse proxy stačí `--host=127.0.0.1`. Adresář dat bere `--data=` nebo `DATA_DIR`, výchozí je `./data` vůči aktuálnímu adresáři.
+Then open `http://localhost:3210`.
 
-## Přístup
+| option | variable | default |
+| --- | --- | --- |
+| `--host=` | `HOST` | `0.0.0.0` |
+| `--port=` | `PORT` | `3210` |
+| `--data=` | `DATA_DIR` | `./data`, relative to the current directory |
 
-Instance má jednoho vlastníka. Při prvním otevření si nastaví heslo a prohlížeč pak drží session v cookie. Agent se jako vlastník přihlásí API klíčem v hlavičce `Authorization: Bearer <klíč>`. Klíče vlastník spravuje přes `GET`, `POST` a `DELETE /api/keys`.
+For use on your own machine only, or behind a reverse proxy, pass `--host=127.0.0.1`.
 
-Kdo nemá heslo ani klíč, vidí jen to, co mu vlastník nasdílí odkazem.
+## Access
 
-## Poznámky
+An instance has a single owner. The first visit sets the owner password, and the browser then keeps a session in a cookie. Until the password is set, whoever opens the page first becomes the owner, so do not expose a fresh instance.
 
-Poznámka je markdown s titulkem. Leží v `data/notes/<id>.md` a vedle ní `<id>.json` s titulkem, sdílením, komentáři a stavem společné editace. Id má pět znaků `0-9a-z` a poznámky ho sdílejí s tabulkami.
+An agent signs in as the owner with an API key in the `Authorization: Bearer <key>` header. The owner manages keys in the settings dialog, or through `GET`, `POST` and `DELETE /api/keys`.
 
-Editor v prohlížeči zvládne víc lidí najednou. Změny jdou přes WebSocket a každý vidí kurzory ostatních. Náhled markdownu vyrenderuje server, bloky `mermaid` nakreslí prohlížeč.
+Anyone without the password or a key sees only what the owner shares by link.
 
-Vlastník má tyto endpointy:
+## Data and backups
 
-| volání | co dělá |
+Everything lives in the data directory (`--data`), as plain files:
+
+| path | contents |
 | --- | --- |
-| `GET /api/notes?q=` | seznam poznámek, volitelně hledání v titulku a textu |
-| `POST /api/notes` | nová prázdná poznámka |
-| `GET /api/notes/:id` | celá poznámka; s `offset` a `limit` vrátí jen očíslované řádky |
-| `PUT /api/notes/:id` | přepíše `title`, `markdown` nebo `shareAccess`; `rotateShare: true` vydá nový odkaz, `renewLink: true` posune konec denního odkazu |
-| `DELETE /api/notes/:id` | smaže poznámku |
-| `POST /api/notes/:id/edit` | cílené úpravy textu, viz níže |
+| `notes/<id>.md` | the note's markdown, a readable copy |
+| `notes/<id>.json` | title, sharing, comments and the collaborative editing state |
+| `sheets/<id>.json` | the table: columns, rows, sharing, version |
+| `sheets/<id>.csv` | a CSV copy of the table for reading |
+| `auth.json` | hashes of the owner password, browser sessions and API keys |
+| `link.key` | the key that signs share links |
 
-Úprava je `{"edits": [{"oldText": "...", "newText": "..."}]}`. `oldText` je přesný úsek markdownu a v poznámce musí být právě jednou. Úpravy se aplikují postupně a když jedna selže, neuloží se žádná. Otevřené editory změnu dostanou hned, bez přepsání celého textu.
+The server loads everything into memory on start and writes the files of a note or table each time it changes. A note's text comes from the editing state in its `.json`; the `.md` next to it is written from that state, and editing it by hand has no effect. Do not change files while the server runs, as it overwrites them.
 
-### Komentáře
+To back up, copy the whole data directory. A copy taken while the server runs can catch a file halfway through a write, so for a clean copy stop the server first. To restore, put the directory back and start the server.
 
-Komentář je vlákno ukotvené k úryvku textu: `quote` spolu s okolím v `prefix` a `suffix`, aby se úryvek našel i po úpravách. Na zprávy ve vlákně se dá odpovídat. Vlákno vyřeší nebo smaže vlastník, nebo ten, kdo do něj psal. Kdo komentuje přes odkaz, zadá jméno a server si ho pamatuje v cookie.
+Keep `link.key` private: with it anyone can make share links. Losing it invalidates every share link issued so far; the server makes a new key on the next start.
 
-### Sdílení
+## Notes
 
-Poznámka má úroveň sdílení `none`, `view`, `comment` nebo `edit`. Odkaz `/s/<ticket>` nese id, úroveň, generaci a den konce platnosti a je podepsaný klíčem `data/link.key`. Sdílení má dva odkazy se stejnou úrovní:
+A note is markdown with a title. Its id has five characters `0-9a-z` and is shared with tables.
 
-- denní odkaz (`shareUrl`) platí do konce následujícího dne UTC, tedy 24 až 48 hodin. Poslední den je v `shareExpires`. `renewLink: true` ho posune na zítřek; dialog Share to udělá při každém otevření.
-- permalink (`sharePermalink`) má den 4095 a nevyprší. Patří do konfigurace agenta, který s poznámkou nebo tabulkou pracuje pravidelně, a drží se jako heslo.
+The browser editor handles several people at once. Changes travel over a WebSocket and everyone sees the others' cursors. The server renders the markdown preview; the browser draws `mermaid` blocks.
 
-Změna úrovně nebo tlačítko „rotate links“ (`rotateShare: true`) zvednou generaci a oba odkazy přestanou platit. Generace se nevrací na nulu: po 255 změnách server další odmítne s `409` a sdílení jde už jen vypnout. Odpovědi pod `/api/share/<ticket>` nesou `linkExpires`, poslední den použitého odkazu, nebo `null` u permalinku. U tabulky v CSV je to hlavička `X-Jot-Link-Expires` s datem nebo `never`. Sdílená stránka platnost ukáže v hlavičce.
+The owner has these endpoints:
 
-Přes odkaz jde totéž API pod `/api/share/<ticket>/…`: čtení, úprava textu (`edit`) a komentáře (`comment` a výš).
-
-## Tabulky
-
-Vedle poznámek leží tabulky v `data/sheets/<id>.json`, s kopií `<id>.csv` pro čtení. Buňka je text. Sdílet se dají pro `view` nebo `edit`, stejnými odkazy jako poznámky. Nová tabulka je rovnou sdílená pro `edit`, aby ji agent mohl hned naplnit.
-
-Čtení je `GET /api/sheets/:id/data`, volitelně s `q` (jedna věta `SELECT`) a `format=csv`. JSON vrací jména vybraných sloupců v `columns`, jejich id v `columnIds` a řádky s polem `id`. Prázdnou tabulku naplní `POST /api/sheets/:id/import-csv`. Zápis je dávka `POST /api/sheets/:id/ops` s tělem `{"baseVersion": 12, "ops": [...]}`. Stejné operace posílá mřížka v prohlížeči přes WebSocket. Jedna chybná operace shodí celou dávku.
-
-| `op` | pole |
+| call | what it does |
 | --- | --- |
-| `insert_column` | `name`, volitelně `before` (id sloupce, jinak na konec) |
+| `GET /api/notes?q=` | list of notes, optionally searched in title and text |
+| `POST /api/notes` | new empty note |
+| `GET /api/notes/:id` | the whole note; with `offset` and `limit` only numbered lines |
+| `PUT /api/notes/:id` | replaces `title`, `markdown` or `shareAccess`; `rotateShare: true` issues new links, `renewLink: true` moves the end of the daily link |
+| `DELETE /api/notes/:id` | deletes the note |
+| `POST /api/notes/:id/edit` | targeted text edits, see below |
+
+An edit is `{"edits": [{"oldText": "...", "newText": "..."}]}`. `oldText` is an exact piece of the markdown and must occur in the note exactly once. Edits apply in order, and if one fails none is saved. Open editors get the change at once, without the whole text being replaced.
+
+### Comments
+
+A comment is a thread anchored to a piece of text: `quote` together with its surroundings in `prefix` and `suffix`, so the piece is found again after edits. Messages in a thread can be answered. A thread is resolved or deleted by the owner or by someone who wrote in it. People who comment through a link enter a name, and the server remembers it in a cookie.
+
+### Sharing
+
+A note has a sharing level of `none`, `view`, `comment` or `edit`. The link `/s/<ticket>` carries the id, the level, a generation and the day it expires, and is signed with `link.key`. Sharing has two links with the same level:
+
+- the daily link (`shareUrl`) is valid until the end of the next UTC day, so 24 to 48 hours. Its last day is in `shareExpires`. `renewLink: true` moves it to tomorrow; the Share dialog does that each time it opens.
+- the permalink (`sharePermalink`) has day 4095 and never expires. It belongs in the configuration of an agent that works with the note or table regularly, and should be kept like a password.
+
+Changing the level or the "rotate links" button (`rotateShare: true`) raises the generation and both links stop working. The generation never goes back to zero: after 255 changes the server refuses further ones with `409` and sharing can only be turned off. Responses under `/api/share/<ticket>` carry `linkExpires`, the last day of the link used, or `null` for a permalink. For a table as CSV it is the `X-Jot-Link-Expires` header with a date or `never`. The shared page shows the expiry in its header.
+
+The same API is available through a link under `/api/share/<ticket>/…`: reading, text edits (`edit`) and comments (`comment` and above).
+
+## Tables
+
+Next to notes, tables live in `sheets/<id>.json`. A cell is text. Tables can be shared for `view` or `edit`, with the same links as notes. A new table is shared for `edit` right away, so an agent can fill it at once.
+
+Reading is `GET /api/sheets/:id/data`, optionally with `q` (a single `SELECT` statement) and `format=csv`. JSON returns the names of the selected columns in `columns`, their ids in `columnIds`, and rows with an `id` field. An empty table is filled by `POST /api/sheets/:id/import-csv`. Writing is a batch `POST /api/sheets/:id/ops` with the body `{"baseVersion": 12, "ops": [...]}`. The grid in the browser sends the same operations over the WebSocket. One bad operation fails the whole batch.
+
+| `op` | fields |
+| --- | --- |
+| `insert_column` | `name`, optionally `before` (column id, otherwise at the end) |
 | `rename_column` | `name`, `newName` |
 | `delete_column` | `name` |
-| `move_column` | `name`, volitelně `before` (id sloupce, jinak na konec) |
-| `resize_column` | `name`, `width` (celé číslo 40–2000 px, `null` vrátí výchozí šířku) |
-| `insert_row` | volitelně `before` (id řádku, jinak na konec), volitelně `values` podle jmen sloupců |
+| `move_column` | `name`, optionally `before` (column id, otherwise at the end) |
+| `resize_column` | `name`, `width` (integer 40–2000 px, `null` restores the default width) |
+| `insert_row` | optionally `before` (row id, otherwise at the end), optionally `values` by column name |
 | `delete_row` | `row` |
-| `move_row` | `row`, volitelně `before` (id řádku, jinak na konec) |
+| `move_row` | `row`, optionally `before` (row id, otherwise at the end) |
 | `set` | `row`, `column`, `value` |
 
-`row` je id řádku, nebo podmínka `{"column": "sku", "value": "ABC"}`, která musí trefit právě jeden řádek. `name` a `column` jsou jména sloupců.
+`row` is a row id, or a condition `{"column": "sku", "value": "ABC"}` that must match exactly one row. `name` and `column` are column names.
 
-`set` a `delete_row` vrátí konflikt 409, když se dotčená buňka změnila po `baseVersion`. `insert_column`, `rename_column` a `delete_column` projdou jen na aktuální verzi. Přesuny a šířka verzi nekontrolují. Šířka se ukládá u sloupce jako `width` a do CSV ani dotazu nejde.
+`set` and `delete_row` return a 409 conflict when the affected cell changed after `baseVersion`. `insert_column`, `rename_column` and `delete_column` pass only on the current version. Moves and widths do not check the version. The width is stored with the column as `width` and goes into neither the CSV nor queries.
 
-Nad 2000 řádků se mřížka v prohlížeči neotevře a tabulku jde číst jen dotazem s `WHERE` nebo `LIMIT`.
+Above 2000 rows the grid does not open in the browser, and the table can only be read by a query with `WHERE` or `LIMIT`.
 
-## Agent
+## Agents
 
-Server vydává skill pro agenta na `/skill/jot/SKILL.md` (zdroj je v `skill-jot/`). Popisuje práci s poznámkou i tabulkou přes sdílený odkaz. Dialog Share v editoru i v mřížce má u denního odkazu i u permalinku tlačítko „for agent“, které zkopíruje text pro agenta: adresu skillu a odkaz. Ikonka robota u vlastníka ten dialog otevře. Na sdílené stránce ikonka robota ukáže stejný text s odkazem, přes který návštěvník stránku otevřel.
+The server serves a skill for agents at `/skill/jot/SKILL.md` (the source is in `skill-jot/`). It describes working with a note or table through a share link. The Share dialog in the editor and in the grid has a "for agent" button for both the daily link and the permalink, which copies a text for the agent: the skill's address and the link. The robot icon opens that dialog for the owner. On a shared page the robot icon shows the same text with the link the visitor used.
 
-## Testy
+## Security
+
+Pages are sent with a `Content-Security-Policy` that allows only the app's own scripts, with `X-Content-Type-Options: nosniff`, and with `Referrer-Policy: no-referrer`, so a link clicked in a shared note does not leak the share ticket. The WebSocket refuses connections whose `Origin` is another site.
+
+## Tests
 
 ```bash
 uv run pytest
 ```
+
+## License
+
+MIT, see `LICENSE`. The bundled [Mermaid](https://github.com/mermaid-js/mermaid) 11.14.0 in `vendor/mermaid/` is MIT licensed, see `vendor/mermaid/LICENSE`.

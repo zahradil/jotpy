@@ -1,17 +1,21 @@
-# Pokyny pro práci na jotpy
+# Working on jotpy
 
-## Když přidáš nebo změníš funkci
+## When you add or change a feature
 
-Když se změní to, co server nebo prohlížeč umí, uprav ve stejném commitu i popis:
+When what the server or the browser can do changes, update the description in the same commit:
 
-1. `README.md`: co jotpy umí, API a formát dat. Popisuje aktuální stav, ne historii.
-2. `skill-jot/SKILL.md`: skill pro agenta, který pracuje s poznámkou nebo tabulkou přes sdílený odkaz. Server ho vydává na `/skill/jot/SKILL.md`. Musí sedět s tím, co API pod `/api/share/…` opravdu přijme a vrátí.
+1. `README.md`: what jotpy does, the API and the data format. It describes the current state, not the history.
+2. `skill-jot/SKILL.md`: the skill for an agent that works with a note or table through a share link. The server serves it at `/skill/jot/SKILL.md`. It must match what the API under `/api/share/…` really accepts and returns.
 
-Text pro agenta (`agentInstructions` v `public/app.js` a `public/sheet.js`, kopírují ho tlačítka „for agent“ v dialogu Share a robot na sdílené stránce) dává agentovi jen adresu skillu a sdílený odkaz. Návod k API do něj nepiš, patří do skillu. Uprav ho, jen když se změní způsob předání agentovi.
+The text for the agent (`agentInstructions` in `public/app.js` and `public/sheet.js`, copied by the "for agent" buttons in the Share dialog and by the robot on a shared page) gives the agent only the skill's address and the share link. Do not put API instructions in it; they belong in the skill. Change it only when the way of handing over to the agent changes.
 
-Nové chování serveru pokryj testem v `tests/`.
+Cover new server behaviour with a test in `tests/`.
 
-## Testy
+## Inline scripts
+
+Pages may run only the inline scripts listed in `CONTENT_SECURITY_POLICY` in `src/jotpy/pages.py`, allowed by their hash. Put new code in a file under `public/`; if an inline script is unavoidable, add its constant to that list.
+
+## Tests
 
 ```bash
 uv run pytest
